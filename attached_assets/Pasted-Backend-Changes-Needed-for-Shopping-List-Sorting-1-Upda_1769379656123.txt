@@ -1,0 +1,63 @@
+Backend Changes Needed for Shopping List Sorting
+
+  1. Update Claude Prompt (User Message)
+
+  Find this section in the Claude API call and replace it:
+
+  OLD:
+  Group duplicate ingredients (same name + unit) together, sum their amounts, and combine recipe names.
+  Sort by category (in the order listed in system prompt), then alphabetically within each category.
+
+  NEW:
+  CRITICAL SORTING REQUIREMENTS:
+  1. Group duplicate ingredients (same name + unit) together, sum their amounts, and combine recipe names
+  2. Sort by category in this EXACT order: Produce, Dairy, Meat, Seafood, Bakery, Canned Goods, Dry Goods, Pasta & Rice, Frozen, Beverages, Condiments, Spices, Baking, Other
+  3. Within each category, sort alphabetically by ingredient name
+  4. ALL items of one category MUST be together before moving to the next category
+  5. Example correct order: [Produce items...], [Dairy items...], [Meat items...], etc. - NO mixing!
+
+  2. Update sortOrder Assignment
+
+  Replace this code:
+  const tasksToCreate = categorizedIngredients.map((item, index) => {
+    const categoryBase = CATEGORY_SORT_ORDER[item.category] || CATEGORY_SORT_ORDER['Other'];
+    const sortOrder = categoryBase + index;
+
+    return {
+      title: ...,
+      notes: ...,
+      category: item.category,
+      goalId: goal.id,
+      completed: false,
+      isToday: false,
+      sortOrder
+    };
+  });
+
+  With this:
+  const tasksToCreate = categorizedIngredients.map((item, globalIndex) => {
+    const categoryBase = CATEGORY_SORT_ORDER[item.category] || CATEGORY_SORT_ORDER['Other'];
+
+    // Count how many items of this category we've seen so far
+    const itemsOfCategoryBefore = categorizedIngredients
+      .slice(0, globalIndex)
+      .filter(i => i.category === item.category).length;
+
+    const sortOrder = categoryBase + itemsOfCategoryBefore;
+
+    return {
+      title: ...,
+      notes: ...,
+      category: item.category,
+      goalId: goal.id,
+      completed: false,
+      isToday: false,
+      sortOrder
+    };
+  });
+
+  Why This Matters
+
+  Before: Items could get mixed up (e.g., "Other" items appearing between Produce items)
+
+  After: All items of the same category stay together, sorted alphabetically within that category

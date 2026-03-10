@@ -1,0 +1,125 @@
+ Backend Changes Needed for Multi-Category Shopping List
+
+  1. Database Migration
+
+  Run this SQL:
+
+  ALTER TABLE goals
+  ADD COLUMN type VARCHAR(20) DEFAULT 'regular',
+  ADD COLUMN shopping_list_group_id UUID NULL;
+
+  CREATE INDEX idx_goals_type ON goals(type);
+  CREATE INDEX idx_goals_shopping_group ON goals(shopping_list_group_id);
+
+  2. Fix /api/recipe-queue Authentication
+
+  The GET /api/recipe-queue endpoint is returning 401 even with valid session cookies. Other endpoints (/api/goals, /api/tasks, etc.) work fine with the same cookie. Please verify:
+  - Recipe queue routes have the same authentication middleware
+  - Session parser middleware is applied before recipe queue routes
+  - req.session.userId or req.user.id is being populated correctly
+
+  3. Update /api/recipe-queue/build-shopping-list Endpoint
+
+  Change response from single Goal to Goal[]
+
+  Before:
+  - Created 1 goal called "Shopping List"
+  - All ingredients as tasks in that goal
+  - Returned single Goal object
+
+  After:
+  - Create multiple goals (one per category: Produce, Dairy, Meat, etc.)
+  - Skip empty categories
+  - Return array of Goal objects
+
+  Implementation:
+
+  // STEP 1: Delete old shopping lists first
+  const oldShoppingGoals = await Goal.findAll({
+    where: { userId, type: 'shopping' }
+  });
+  for (const goal of oldShoppingGoals) {
+    await goal.destroy(); // Cascade deletes tasks
+  }
+
+  // STEP 2: Group ingredients by category from Claude response
+  const ingredientsByCategory = {};
+  categorizedIngredients.forEach(item => {
+    if (!ingredientsByCategory[item.category]) {
+      ingredientsByCategory[item.category] = [];
+    }
+    ingredientsByCategory[item.category].push(item);
+  });
+
+  // STEP 3: Create one goal per category
+  const CATEGORY_COLORS = {
+    'Produce': '#10B981',      'Dairy': '#F59E0B',
+    'Meat': '#EF4444',         'Seafood': '#3B82F6',
+    'Bakery': '#F97316',       'Canned Goods': '#8B5CF6',
+    'Dry Goods': '#A78BFA',    'Pasta & Rice': '#FBBF24',
+    'Frozen': '#60A5FA',       'Beverages': '#EC4899',
+    'Condiments': '#14B8A6',   'Spices': '#F472B6',
+    'Baking': '#FB923C',       'Other': '#6B7280'
+  };
+
+  const CATEGORY_SORT_ORDER = {
+    'Produce': 0,      'Dairy': 100,        'Meat': 200,
+    'Seafood': 300,    'Bakery': 400,       'Canned Goods': 500,
+    'Dry Goods': 600,  'Pasta & Rice': 700, 'Frozen': 800,
+    'Beverages': 900,  'Condiments': 1000,  'Spices': 1100,
+    'Baking': 1200,    'Other': 9000
+  };
+
+  const shoppingListGroupId = uuidv4();
+  const groupName = data?.groupName || 'Shopping List';
+  const createdGoals = [];
+
+  for (const [category, items] of Object.entries(ingredientsByCategory)) {
+    const goal = await Goal.create({
+      userId,
+      title: category, // "Produce", "Dairy", etc.
+      description: `${groupName} from ${recipeQueue.length} recipes`,
+      color: CATEGORY_COLORS[category] || '#10B981',
+      type: 'shopping', // NEW
+      shoppingListGroupId, // NEW - same for all goals
+      sortOrder: CATEGORY_SORT_ORDER[category] || 9000,
+      isHabitGoal: false,
+      isArchived: false,
+    });
+
+    // Create tasks for this category
+    const tasksToCreate = items.map((item, index) => ({
+      title: item.amount && item.unit
+        ? `${item.amount} ${item.unit} ${item.ingredient}`
+        : item.ingredient,
+      notes: `from ${item.recipeNames.join(', ')}`,
+      category,
+      goalId: goal.id,
+      completed: false,
+      isToday: false,
+      sortOrder: index,
+    }));
+
+    await Task.bulkCreate(tasksToCreate);
+    createdGoals.push(goal);
+  }
+
+  // STEP 4: Return array instead of single goal
+  return res.json(createdGoals); // Array of Goal objects
+
+  4. Request Body Change
+
+  Change from:
+  { "goalName": "Shopping List" }
+
+  To:
+  { "groupName": "Shopping List" }
+
+  (Optional parameter, defaults to "Shopping List")
+
+  5. Important Notes
+
+  - Don't dequeue recipes after building shopping list (users may want to rebuild)
+  - Don't dequeue recipes when shopping list goal is deleted
+  - Only user explicitly dequeuing recipes should remove them from queue
+  - Deleting a shopping list goal should only delete the goal and its tasks, not touch the recipe queue

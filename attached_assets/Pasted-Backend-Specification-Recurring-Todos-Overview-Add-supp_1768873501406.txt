@@ -1,0 +1,263 @@
+Backend Specification: Recurring Todos
+
+  Overview
+
+  Add support for recurring tasks that automatically reschedule to their next occurrence when completed, instead of being deleted.
+
+  Dependencies
+
+  npm install rrule
+
+  1. Database Schema Changes
+
+  Task Model - Add Fields:
+
+  {
+    // Existing fields remain unchanged
+    // ... id, title, completed, isToday, etc.
+
+    // New fields:
+    isRecurring: {
+      type: Boolean,
+      default: false,
+    },
+    recurrenceRule: {
+      type: String,     // RRULE string (e.g., "FREQ=WEEKLY;BYDAY=TH")
+      required: false,  // Only required if isRecurring=true
+    },
+    nextOccurrence: {
+      type: Date,       // When this task is next due
+      required: false,  // Only required if isRecurring=true
+    },
+    lastCompleted: {
+      type: Date,       // Last time this recurring task was completed
+      required: false,
+    },
+  }
+
+  2. API Endpoints
+
+  A. Create Task (POST /api/tasks)
+
+  Request body changes:
+  {
+    title: "Take out trash",
+    goalId: "optional-goal-id",
+    isRecurring: true,                           // NEW
+    recurrenceRule: "FREQ=WEEKLY;BYDAY=TH",     // NEW - RRULE format
+    nextOccurrence: "2024-01-18T00:00:00Z",     // NEW - ISO date
+    // ... other existing fields
+  }
+
+  Backend logic:
+  - Validate that if isRecurring=true, both recurrenceRule and nextOccurrence are provided
+  - Parse recurrenceRule to verify it's valid RRULE format (catch parsing errors)
+  - Store all fields as provided
+  - Set completed: false initially
+
+  B. Update Task (PUT /api/tasks/:id)
+
+  Same as create - allow updating all recurring fields
+  - If changing from non-recurring to recurring, require recurrenceRule and nextOccurrence
+  - If changing from recurring to non-recurring, clear recurrenceRule, nextOccurrence, lastCompleted
+
+  C. Complete Task (PUT /api/tasks/:id)
+
+  This is the key change!
+
+  Existing behavior (non-recurring tasks):
+  task.completed = true;
+  task.completedAt = new Date();
+
+  New behavior (recurring tasks):
+  const rrule = require('rrule');
+
+  if (task.isRecurring && task.recurrenceRule) {
+    // Calculate next occurrence
+    const rule = rrule.rrulestr(task.recurrenceRule);
+    const now = new Date();
+    const next = rule.after(now, true); // true = inclusive of now
+
+    // Update task for next occurrence
+    task.nextOccurrence = next;
+    task.lastCompleted = now;
+    task.completed = false;        // Reset completion status
+    task.isToday = false;          // Will be recalculated by frontend/daily job
+
+  } else {
+    // Regular task - mark as completed (existing behavior)
+    task.completed = true;
+    task.completedAt = new Date();
+  }
+
+  D. Get Tasks (GET /api/tasks, GET /api/today)
+
+  No changes needed - just return all fields including the new ones
+
+  3. Business Logic Details
+
+  Calculating Next Occurrence
+
+  const rrule = require('rrule');
+
+  function calculateNextOccurrence(recurrenceRule, fromDate = new Date()) {
+    try {
+      const rule = rrule.rrulestr(recurrenceRule);
+      return rule.after(fromDate, true); // true = inclusive
+    } catch (error) {
+      console.error('Invalid recurrence rule:', error);
+      return null;
+    }
+  }
+
+  Example RRULE patterns:
+
+  // Every Thursday
+  "FREQ=WEEKLY;BYDAY=TH"
+
+  // Every 2 weeks on Monday
+  "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"
+
+  // 2nd Monday of each month
+  "FREQ=MONTHLY;BYDAY=+2MO"
+
+  // 15th of every month
+  "FREQ=MONTHLY;BYMONTHDAY=15"
+
+  // Every day
+  "FREQ=DAILY"
+
+  4. Edge Cases to Handle
+
+  A. What if rule.after() returns null?
+
+  - Could happen if RRULE has an end date (UNTIL) that's passed
+  - Treat as completed forever - set nextOccurrence = null
+
+  B. Overdue recurring tasks
+
+  - A recurring task is "overdue" if nextOccurrence < today and completed = false
+  - Frontend will handle display logic
+  - Backend just stores the data
+
+  C. Early completion
+
+  - User can complete a recurring task before its nextOccurrence date
+  - Backend should still calculate next occurrence from the CURRENT nextOccurrence, not from "now"
+  - Example: Task due Thursday, completed Tuesday → next occurrence is NEXT Thursday, not next Tuesday
+
+  Correct implementation:
+  // Use the scheduled date, not current date
+  const baseDate = task.nextOccurrence || new Date();
+  const rule = rrule.rrulestr(task.recurrenceRule);
+  const next = rule.after(baseDate, false); // false = exclusive (get NEXT occurrence)
+
+  D. Deleting recurring tasks
+
+  - DELETE /api/tasks/:id should work normally
+  - Deletes the recurring task entirely (won't reschedule)
+
+  5. Migration
+
+  Database Migration Script:
+
+  // Add new fields to existing tasks collection
+  db.tasks.updateMany(
+    {},
+    {
+      $set: {
+        isRecurring: false,
+        recurrenceRule: null,
+        nextOccurrence: null,
+        lastCompleted: null,
+      }
+    }
+  );
+
+  6. Validation Rules
+
+  On Create/Update:
+
+  if (isRecurring === true) {
+    // Require these fields
+    if (!recurrenceRule) return error("recurrenceRule required for recurring tasks");
+    if (!nextOccurrence) return error("nextOccurrence required for recurring tasks");
+
+    // Validate RRULE format
+    try {
+      rrule.rrulestr(recurrenceRule);
+    } catch (e) {
+      return error("Invalid recurrence rule format");
+    }
+
+    // Validate nextOccurrence is a valid date
+    if (isNaN(new Date(nextOccurrence).getTime())) {
+      return error("nextOccurrence must be a valid date");
+    }
+  }
+
+  7. Testing Scenarios
+
+  Test these cases:
+
+  1. ✅ Create recurring task with valid RRULE
+  2. ✅ Create recurring task with invalid RRULE → should fail validation
+  3. ✅ Complete recurring task → verify nextOccurrence updated correctly
+  4. ✅ Complete recurring task early (before its date) → verify next occurrence is correct
+  5. ✅ Complete recurring task on its exact date → verify next occurrence is correct
+  6. ✅ Update non-recurring task to recurring → verify required fields
+  7. ✅ Update recurring task to non-recurring → verify fields cleared
+  8. ✅ Delete recurring task → verify it's gone (doesn't reschedule)
+  9. ✅ Get tasks → verify new fields returned
+
+  8. Example API Requests/Responses
+
+  Create Recurring Task:
+
+  POST /api/tasks
+  {
+    "title": "Take out recycling",
+    "isRecurring": true,
+    "recurrenceRule": "FREQ=WEEKLY;BYDAY=TH",
+    "nextOccurrence": "2024-01-18T00:00:00.000Z"
+  }
+
+  Response:
+  {
+    "id": "abc123",
+    "title": "Take out recycling",
+    "completed": false,
+    "isRecurring": true,
+    "recurrenceRule": "FREQ=WEEKLY;BYDAY=TH",
+    "nextOccurrence": "2024-01-18T00:00:00.000Z",
+    "lastCompleted": null,
+    // ... other fields
+  }
+
+  Complete Recurring Task:
+
+  PUT /api/tasks/abc123
+  {
+    "completed": true
+  }
+
+  Response:
+  {
+    "id": "abc123",
+    "title": "Take out recycling",
+    "completed": false,                          // Reset to false!
+    "isRecurring": true,
+    "recurrenceRule": "FREQ=WEEKLY;BYDAY=TH",
+    "nextOccurrence": "2024-01-25T00:00:00.000Z", // Moved to next Thursday
+    "lastCompleted": "2024-01-18T14:30:00.000Z",  // When it was just completed
+    // ... other fields
+  }
+
+  ---
+  Summary for Backend Dev:
+
+  1. Install rrule npm package
+  2. Add 4 new fields to Task model
+  3. Modify completion logic to check isRecurring and reschedule if true
+  4. Add validation for recurring task fields
+  5. Test all scenarios above

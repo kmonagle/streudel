@@ -1,0 +1,289 @@
+Backend Spec: Recipe Management
+
+  Overview
+
+  Add recipe capture and management functionality. Users can save recipes by pasting a URL. The backend fetches the page, extracts structured recipe data (schema.org/Recipe), and stores it.
+
+  Data Model
+
+  Recipe
+
+  {
+    id: string;                    // UUID
+    userId: string;                // Owner
+    url: string;                   // Original recipe URL
+    title: string;                 // Recipe name
+    imageUrl: string | null;       // Main recipe image
+    description: string | null;    // Short description
+    ingredients: string[];         // List of ingredients
+    instructions: string[];        // Step-by-step instructions (or single text block)
+    prepTime: string | null;       // e.g., "PT15M" (ISO 8601 duration) or "15 minutes"
+    cookTime: string | null;       // e.g., "PT30M" or "30 minutes"
+    totalTime: string | null;      // e.g., "PT45M" or "45 minutes"
+    servings: string | null;       // e.g., "4", "4 servings", "4-6"
+    cuisine: string | null;        // e.g., "Italian", "Mexican"
+    category: string | null;       // e.g., "Dessert", "Main Course"
+    notes: string | null;          // User's personal notes
+    createdAt: timestamp;
+    updatedAt: timestamp;
+  }
+
+  API Endpoints
+
+  1. Create Recipe from URL
+
+  POST /api/recipes/from-url
+
+  Request:
+  {
+    "url": "https://example.com/recipe/chocolate-chip-cookies"
+  }
+
+  Response: (201 Created)
+  {
+    "id": "uuid",
+    "userId": "uuid",
+    "url": "https://example.com/recipe/chocolate-chip-cookies",
+    "title": "Perfect Chocolate Chip Cookies",
+    "imageUrl": "https://example.com/images/cookies.jpg",
+    "description": "The best chocolate chip cookies you'll ever make",
+    "ingredients": [
+      "2 cups all-purpose flour",
+      "1 tsp baking soda",
+      "1/2 tsp salt",
+      "1 cup butter, softened",
+      "3/4 cup granulated sugar",
+      "3/4 cup packed brown sugar",
+      "2 large eggs",
+      "2 tsp vanilla extract",
+      "2 cups chocolate chips"
+    ],
+    "instructions": [
+      "Preheat oven to 375°F (190°C).",
+      "Mix flour, baking soda, and salt in a bowl.",
+      "Beat butter and sugars until creamy.",
+      "Add eggs and vanilla, beat well.",
+      "Gradually blend in flour mixture.",
+      "Stir in chocolate chips.",
+      "Drop by rounded tablespoon onto ungreased cookie sheets.",
+      "Bake 9-11 minutes or until golden brown.",
+      "Cool on baking sheet for 2 minutes, then move to wire rack."
+    ],
+    "prepTime": "15 minutes",
+    "cookTime": "10 minutes",
+    "totalTime": "25 minutes",
+    "servings": "48 cookies",
+    "cuisine": null,
+    "category": "Dessert",
+    "notes": null,
+    "createdAt": "2026-01-23T10:30:00Z",
+    "updatedAt": "2026-01-23T10:30:00Z"
+  }
+
+  Error Responses:
+  - 400: Invalid URL
+  - 404: No recipe data found at URL
+  - 422: URL doesn't contain schema.org/Recipe data
+  - 500: Failed to fetch or parse recipe
+
+  2. Get All Recipes
+
+  GET /api/recipes
+
+  Response: (200 OK)
+  [
+    {
+      "id": "uuid",
+      "url": "...",
+      "title": "Perfect Chocolate Chip Cookies",
+      "imageUrl": "...",
+      // ... all recipe fields
+    }
+  ]
+
+  3. Get Recipe by ID
+
+  GET /api/recipes/:id
+
+  Response: (200 OK)
+  {
+    "id": "uuid",
+    // ... all recipe fields
+  }
+
+  Error Responses:
+  - 404: Recipe not found
+
+  4. Update Recipe
+
+  PATCH /api/recipes/:id
+
+  Request:
+  {
+    "notes": "Family loved this! Used dark chocolate chips instead.",
+    "title": "Mom's Chocolate Chip Cookies"  // Can update any field except id, userId, createdAt
+  }
+
+  Response: (200 OK)
+  {
+    "id": "uuid",
+    // ... updated recipe
+  }
+
+  5. Delete Recipe
+
+  DELETE /api/recipes/:id
+
+  Response: (204 No Content)
+
+  Error Responses:
+  - 404: Recipe not found
+
+  Recipe Parsing Implementation
+
+  schema.org/Recipe Extraction
+
+  Recipe websites typically embed structured data using JSON-LD in a <script type="application/ld+json"> tag. Example:
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Recipe",
+    "name": "Perfect Chocolate Chip Cookies",
+    "image": "https://example.com/images/cookies.jpg",
+    "description": "The best chocolate chip cookies you'll ever make",
+    "prepTime": "PT15M",
+    "cookTime": "PT10M",
+    "totalTime": "PT25M",
+    "recipeYield": "48 cookies",
+    "recipeIngredient": [
+      "2 cups all-purpose flour",
+      "1 tsp baking soda",
+      // ...
+    ],
+    "recipeInstructions": [
+      {
+        "@type": "HowToStep",
+        "text": "Preheat oven to 375°F (190°C)."
+      },
+      // OR just strings:
+      "Preheat oven to 375°F (190°C).",
+      // ...
+    ],
+    "recipeCuisine": "American",
+    "recipeCategory": "Dessert"
+  }
+  </script>
+
+  Parsing Logic
+
+  1. Fetch the URL - GET request to the provided URL
+  2. Parse HTML - Extract <script type="application/ld+json"> tags
+  3. Find Recipe Schema - Look for objects with "@type": "Recipe" (could be nested in @graph array)
+  4. Extract Fields:
+    - name → title
+    - image → imageUrl (could be string, array, or object with url property - take first if array)
+    - description → description
+    - recipeIngredient → ingredients (array of strings)
+    - recipeInstructions → instructions (could be array of strings, or HowToStep objects - extract text property)
+    - prepTime → prepTime (convert ISO 8601 duration to readable format)
+    - cookTime → cookTime
+    - totalTime → totalTime
+    - recipeYield → servings
+    - recipeCuisine → cuisine
+    - recipeCategory → category
+  5. Handle Variations:
+    - Instructions might be a single string, array of strings, array of HowToStep objects, or HowToSection with itemListElement
+    - Image might be string URL, array of URLs, or ImageObject with url property
+    - Times are typically ISO 8601 duration format (PT15M = 15 minutes, PT1H30M = 1 hour 30 minutes)
+
+  ISO 8601 Duration Parsing
+
+  Convert durations like PT15M or PT1H30M to human-readable format:
+  - PT15M → "15 minutes"
+  - PT1H → "1 hour"
+  - PT1H30M → "1 hour 30 minutes"
+  - P1D → "1 day"
+
+  Example Libraries (Node.js)
+
+  - HTML parsing: cheerio or jsdom
+  - Fetching: axios or node-fetch
+  - Duration parsing: iso8601-duration or manual parsing
+
+  Database Schema (SQL)
+
+  CREATE TABLE recipes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    image_url TEXT,
+    description TEXT,
+    ingredients JSONB NOT NULL DEFAULT '[]', -- Array of strings
+    instructions JSONB NOT NULL DEFAULT '[]', -- Array of strings
+    prep_time TEXT,
+    cook_time TEXT,
+    total_time TEXT,
+    servings TEXT,
+    cuisine TEXT,
+    category TEXT,
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_recipes_user_id ON recipes(user_id);
+  CREATE INDEX idx_recipes_created_at ON recipes(created_at DESC);
+
+  Validation Rules
+
+  - url: Must be valid HTTP/HTTPS URL
+  - title: Required (extracted from recipe data)
+  - ingredients: Must be array, minimum 1 item
+  - instructions: Must be array, minimum 1 item
+  - All other fields: Optional
+
+  Error Handling
+
+  No Recipe Found
+
+  If the URL doesn't contain schema.org/Recipe data:
+  {
+    "error": "No recipe data found at URL",
+    "details": "The page doesn't contain schema.org/Recipe structured data"
+  }
+
+  Invalid URL
+
+  {
+    "error": "Invalid URL",
+    "details": "URL must be a valid HTTP or HTTPS URL"
+  }
+
+  Fetch Failed
+
+  {
+    "error": "Failed to fetch recipe",
+    "details": "Could not access the URL (timeout, network error, etc.)"
+  }
+
+  Notes
+
+  - Store the original URL so users can always reference the source
+  - Handle timeouts gracefully (recipe pages can be slow)
+  - Consider rate limiting to prevent abuse
+  - May want to cache/store the image locally instead of hotlinking (optional future enhancement)
+  - Some sites may block scraping - consider user-agent headers
+  - Future: Support manual recipe creation if URL parsing fails
+
+  Testing URLs
+
+  Good sites with schema.org/Recipe data:
+  - AllRecipes.com
+  - Food Network
+  - NYT Cooking
+  - Serious Eats
+  - Bon Appétit
+
+  Example test URL: https://www.allrecipes.com/recipe/10813/best-chocolate-chip-cookies/

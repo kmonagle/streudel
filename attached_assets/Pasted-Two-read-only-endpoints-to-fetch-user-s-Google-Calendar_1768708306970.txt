@@ -1,0 +1,163 @@
+Two read-only endpoints to fetch user's Google Calendar data. No database storage needed - mobile app keeps events in memory.
+
+  ---
+  1. GET /api/calendar/calendars
+
+  Purpose: List user's Google Calendars so they can select which ones to sync
+
+  Authentication: Requires authenticated session (existing auth middleware)
+
+  Request:
+  GET /api/calendar/calendars
+
+  Response:
+  {
+    "calendars": [
+      {
+        "id": "primary",
+        "name": "Kevin's Calendar",
+        "description": "Primary calendar",
+        "backgroundColor": "#9FC6E7",
+        "foregroundColor": "#000000",
+        "isPrimary": true
+      },
+      {
+        "id": "family123@group.calendar.google.com",
+        "name": "Family",
+        "description": null,
+        "backgroundColor": "#F4511E",
+        "foregroundColor": "#FFFFFF",
+        "isPrimary": false
+      }
+    ]
+  }
+
+  Google Calendar API Call:
+  // Using googleapis npm package
+  const { google } = require('googleapis');
+
+  const calendar = google.calendar({ version: 'v3', auth: oAuth2Client });
+  const response = await calendar.calendarList.list();
+
+  Error Handling:
+  - 401 if not authenticated
+  - 403 if calendar permission not granted
+  - 500 for other errors
+
+  ---
+  2. GET /api/calendar/events
+
+  Purpose: Fetch events from selected calendars for next N days
+
+  Authentication: Requires authenticated session
+
+  Query Parameters:
+  - calendarIds (required): Comma-separated calendar IDs (e.g., primary,family123@group.calendar.google.com)
+  - days (optional): Number of days to fetch (default: 7, max: 30)
+
+  Request:
+  GET /api/calendar/events?calendarIds=primary,family123@group.calendar.google.com&days=7
+
+  Response:
+  {
+    "events": [
+      {
+        "id": "abc123",
+        "calendarId": "primary",
+        "title": "Team Standup",
+        "description": "Daily standup meeting",
+        "location": "Zoom",
+        "startTime": "2026-01-17T09:00:00-08:00",
+        "endTime": "2026-01-17T09:30:00-08:00",
+        "isAllDay": false,
+        "color": "#9FC6E7"
+      },
+      {
+        "id": "def456",
+        "calendarId": "primary",
+        "title": "Sarah's Birthday",
+        "description": null,
+        "location": null,
+        "startTime": "2026-01-18",
+        "endTime": "2026-01-19",
+        "isAllDay": true,
+        "color": "#9FC6E7"
+      }
+    ]
+  }
+
+  Google Calendar API Call:
+  // For each calendar ID
+  const now = new Date();
+  const futureDate = new Date();
+  futureDate.setDate(now.getDate() + days);
+
+  const response = await calendar.events.list({
+    calendarId: calendarId,
+    timeMin: now.toISOString(),
+    timeMax: futureDate.toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime',
+    maxResults: 100
+  });
+
+  Field Mapping:
+  {
+    id: event.id,
+    calendarId: calendarId,
+    title: event.summary,
+    description: event.description || null,
+    location: event.location || null,
+    startTime: event.start.dateTime || event.start.date,
+    endTime: event.end.dateTime || event.end.date,
+    isAllDay: !!event.start.date, // dateTime = timed event, date = all-day
+    color: calendarBackgroundColor // from calendar, not event
+  }
+
+  Error Handling:
+  - 400 if calendarIds missing or invalid
+  - 401 if not authenticated
+  - 403 if calendar permission not granted or calendar not accessible
+  - 500 for other errors
+
+  ---
+  Implementation Notes
+
+  OAuth Token:
+  - Use existing Google OAuth access token from user session
+  - Token must have https://www.googleapis.com/auth/calendar.readonly scope
+  - Handle token refresh if expired
+
+  Rate Limiting:
+  - Google Calendar API quota: 1,000,000 queries/day
+  - Mobile app will call max ~10x per day per user (on screen focus)
+  - No special rate limiting needed
+
+  NPM Package:
+  npm install googleapis
+
+  Example Implementation:
+  import { google } from 'googleapis';
+
+  // Get OAuth2 client from user session
+  const oAuth2Client = getOAuthClientForUser(req.user);
+  const calendar = google.calendar({ version: 'v3', auth: oAuth2Client });
+
+  // List calendars
+  const calendars = await calendar.calendarList.list();
+
+  // Get events
+  const events = await calendar.events.list({
+    calendarId: 'primary',
+    timeMin: new Date().toISOString(),
+    timeMax: futureDate.toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime'
+  });
+
+  Testing:
+  - Test with user who has multiple calendars
+  - Test with all-day events
+  - Test with recurring events (should appear as separate instances due to singleEvents: true)
+  - Test with events that have no end time
+  - Test with empty calendars

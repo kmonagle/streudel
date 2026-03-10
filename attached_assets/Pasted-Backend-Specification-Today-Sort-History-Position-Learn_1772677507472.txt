@@ -1,0 +1,152 @@
+Backend Specification: Today Sort History & Position Learning
+
+  Overview
+
+  Track every time an item's position changes in the Today view, then use that history to calculate "learned positions" so items can be intelligently placed when added.
+
+  1. Database Model: TodaySortEvent
+
+  # Rails migration
+  create_table :today_sort_events do |t|
+    t.references :user, null: false, foreign_key: true
+    t.string :item_id, null: false        # Task or Habit ID
+    t.string :item_type, null: false      # 'task' or 'habit'
+    t.integer :old_position               # null if item being added for first time
+    t.integer :new_position, null: false  # new todaySortOrder value
+    t.string :event_type, null: false     # 'drag', 'quick_sort', 'add', 'remove', 'build_today'
+    t.timestamps
+  end
+
+  add_index :today_sort_events, [:user_id, :item_id]
+  add_index :today_sort_events, [:user_id, :created_at]
+
+  When to create events:
+  - User drags items → event_type: 'drag'
+  - User uses quick sort → event_type: 'quick_sort'
+  - User toggles item to Today → event_type: 'add'
+  - User removes item from Today → event_type: 'remove'
+  - Build Today adds item → event_type: 'build_today'
+
+  2. API Endpoint: Get Learned Position (single item)
+
+  Endpoint: GET /api/today/learned-position/:itemId
+
+  Query params:
+  - itemType - 'task' or 'habit'
+
+  Response:
+  {
+    "itemId": "uuid",
+    "itemType": "habit",
+    "learnedPosition": 2,
+    "confidence": 0.85,
+    "dataPoints": 15
+  }
+
+  Algorithm - Weighted Recent Average:
+  def calculate_learned_position(user_id, item_id, item_type)
+    events = TodaySortEvent
+      .where(user_id: user_id, item_id: item_id, item_type: item_type)
+      .where(event_type: ['drag', 'add', 'build_today'])  # Exclude 'remove'
+      .where('created_at > ?', 90.days.ago)
+      .order(created_at: :desc)
+
+    return nil if events.count < 3  # Need at least 3 data points
+
+    total_weighted_position = 0
+    total_weight = 0
+
+    events.each do |event|
+      days_ago = (Time.now - event.created_at) / 1.day
+
+      weight = if days_ago <= 7
+        3.0  # Last 7 days: weight 3x
+      elsif days_ago <= 30
+        2.0  # Days 8-30: weight 2x
+      else
+        1.0  # Days 31-90: weight 1x
+      end
+
+      total_weighted_position += event.new_position * weight
+      total_weight += weight
+    end
+
+    learned_position = (total_weighted_position / total_weight).round
+    confidence = [total_weight / 20.0, 1.0].min  # Max confidence at 20+ data points
+
+    {
+      learnedPosition: learned_position,
+      confidence: confidence,
+      dataPoints: events.count
+    }
+  end
+
+  Edge cases:
+  - No history → Return { "learnedPosition": null, "confidence": 0, "dataPoints": 0 }
+  - Less than 3 data points → Return null
+
+  3. API Endpoint: Get Learned Positions (bulk)
+
+  Endpoint: POST /api/today/learned-positions/bulk
+
+  Request Body:
+  {
+    "items": [
+      { "itemId": "uuid1", "itemType": "habit" },
+      { "itemId": "uuid2", "itemType": "task" }
+    ]
+  }
+
+  Response:
+  {
+    "positions": [
+      { "itemId": "uuid1", "itemType": "habit", "learnedPosition": 2, "confidence": 0.85, "dataPoints": 15 },
+      { "itemId": "uuid2", "itemType": "task", "learnedPosition": null, "confidence": 0, "dataPoints": 0 }
+    ]
+  }
+
+  4. Enhance Existing Endpoint: /api/today/reorder
+
+  Current behavior: Updates todaySortOrder for all items
+
+  Add: Automatically log sort events when reorder happens
+
+  # In TodayController#reorder
+  def reorder
+    items = params[:items]  # Array of { id, type, todaySortOrder, lastTodaySortOrder }
+
+    items.each do |item_data|
+      item = find_item(item_data[:id], item_data[:type])
+      old_position = item.todaySortOrder
+      new_position = item_data[:todaySortOrder]
+
+      item.update!(
+        todaySortOrder: new_position,
+        lastTodaySortOrder: item_data[:lastTodaySortOrder]
+      )
+
+      # Log the event (can be async/background job)
+      TodaySortEvent.create!(
+        user_id: current_user.id,
+        item_id: item.id,
+        item_type: item_data[:type],
+        old_position: old_position,
+        new_position: new_position,
+        event_type: 'drag'  # or detect from context
+      )
+    end
+
+    head :ok
+  end
+
+  Summary
+
+  Create:
+  1. TodaySortEvent model with migration
+  2. GET /api/today/learned-position/:itemId endpoint
+  3. POST /api/today/learned-positions/bulk endpoint
+  4. Enhance POST /api/today/reorder to auto-log events
+
+  Algorithm: Weighted recent average (last 7 days ×3, days 8-30 ×2, days 31-90 ×1)
+
+  Minimum data: Require 3+ historical events before returning a learned position

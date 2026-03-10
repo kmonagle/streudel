@@ -1,0 +1,38 @@
+# --- Copy of your existing .gitignore rules ---
+
+node*modules/
+.expo/
+dist/
+npm-debug.\*
+*.jks
+_.p8
+_.p12
+_.key
+_.mobileprovision
+\_.orig.\*
+web-build/
+
+# macOS
+
+.DS_Store
+
+# Temporary files created by Metro
+
+.metro-health-check\*
+
+# TypeScript
+
+\*.tsbuildinfo
+expo-env.d.ts
+
+android/_
+ios/_
+
+# --- Custom EAS overrides ---
+
+# Force EAS to upload this file even though Git ignores it
+
+!src/constants/devConfig.ts
+
+android/_
+ios/_

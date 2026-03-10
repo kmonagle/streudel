@@ -1,0 +1,526 @@
+Backend API Specification: User Tiers & Subscriptions
+
+  Overview
+
+  Add user subscription tiers (free/premium) with RevenueCat integration for mobile in-app purchases. Web interface will be read-only.
+
+  ---
+  1. Database Schema Changes
+
+  User Table - Add Columns
+
+  ALTER TABLE users ADD COLUMN subscription_tier VARCHAR(10) DEFAULT 'free';
+  ALTER TABLE users ADD COLUMN subscription_status VARCHAR(20) DEFAULT 'none';
+  ALTER TABLE users ADD COLUMN subscription_expires_at TIMESTAMP NULL;
+  ALTER TABLE users ADD COLUMN subscription_will_renew BOOLEAN DEFAULT false;
+  ALTER TABLE users ADD COLUMN subscription_platform VARCHAR(10) NULL;
+  ALTER TABLE users ADD COLUMN subscription_product_id VARCHAR(100) NULL;
+  ALTER TABLE users ADD COLUMN subscription_purchased_at TIMESTAMP NULL;
+  ALTER TABLE users ADD COLUMN subscription_cancelled_at TIMESTAMP NULL;
+  ALTER TABLE users ADD COLUMN subscription_is_trial BOOLEAN DEFAULT false;
+  ALTER TABLE users ADD COLUMN revenuecat_user_id VARCHAR(100) NULL;
+
+  -- Index for lookups
+  CREATE INDEX idx_users_subscription_tier ON users(subscription_tier);
+  CREATE INDEX idx_users_revenuecat_id ON users(revenuecat_user_id);
+
+  Enum Values:
+  - subscription_tier: 'free', 'premium'
+  - subscription_status: 'active', 'cancelled', 'expired', 'grace_period', 'trial', 'none'
+  - subscription_platform: 'ios', 'android', null
+
+  ---
+  2. Modified Endpoints
+
+  GET /api/auth/user
+
+  Changes Required: Add subscription object to existing response
+
+  Response (200 OK):
+  {
+    "id": "user_123",
+    "email": "user@example.com",
+    "name": "John Doe",
+    "picture": "https://...",
+    "subscription": {
+      "tier": "free",
+      "status": "none",
+      "expiresAt": null,
+      "willRenew": false,
+      "platform": null,
+      "productId": null,
+      "purchasedAt": null,
+      "isInTrialPeriod": false
+    }
+  }
+
+  Example - Premium User:
+  {
+    "id": "user_123",
+    "email": "user@example.com",
+    "name": "John Doe",
+    "picture": "https://...",
+    "subscription": {
+      "tier": "premium",
+      "status": "active",
+      "expiresAt": "2026-02-18T10:30:00Z",
+      "willRenew": true,
+      "platform": "ios",
+      "productId": "premium_monthly",
+      "purchasedAt": "2026-01-18T10:30:00Z",
+      "isInTrialPeriod": false
+    }
+  }
+
+  ---
+  POST /api/habits - Add Limit Enforcement
+
+  Before Creating:
+  // Pseudo-code
+  const userHabitCount = await countUserHabits(userId);
+  const limit = user.subscription_tier === 'premium' ? Infinity : 50;
+
+  if (userHabitCount >= limit) {
+    return res.status(429).json({
+      error: "Limit exceeded",
+      details: {
+        limit: 50,
+        current: userHabitCount,
+        feature: "habits",
+        tier: "free",
+        upgradeRequired: true
+      }
+    });
+  }
+
+  Response (429 Too Many Requests):
+  {
+    "error": "Limit exceeded",
+    "details": {
+      "limit": 50,
+      "current": 50,
+      "feature": "habits",
+      "tier": "free",
+      "upgradeRequired": true
+    }
+  }
+
+  POST /api/tasks - Add Limit Enforcement
+
+  Limit: 100 tasks for free users
+
+  Response (429): Same format as habits, with "feature": "tasks" and "limit": 100
+
+  POST /api/goals - Add Limit Enforcement
+
+  Limit: 10 goals for free users
+
+  Response (429): Same format, with "feature": "goals" and "limit": 10
+
+  ---
+  3. New Endpoints
+
+  POST /api/subscription/validate
+
+  Purpose: Validate RevenueCat purchase and update user's subscription
+
+  Request Body:
+  {
+    "purchaserInfo": {
+      "originalAppUserId": "user_123",
+      "entitlements": {
+        "active": {
+          "premium": {
+            "identifier": "premium",
+            "isActive": true,
+            "willRenew": true,
+            "periodType": "normal",
+            "latestPurchaseDate": "2026-01-18T10:30:00Z",
+            "expirationDate": "2026-02-18T10:30:00Z",
+            "store": "app_store",
+            "productIdentifier": "premium_monthly",
+            "isSandbox": false
+          }
+        }
+      }
+    }
+  }
+
+  Implementation Steps:
+  1. Extract user ID from purchaserInfo.originalAppUserId
+  2. Check if user has active entitlement for "premium"
+  3. Update user record:
+  subscription_tier = 'premium'
+  subscription_status = 'active'
+  subscription_expires_at = entitlement.expirationDate
+  subscription_will_renew = entitlement.willRenew
+  subscription_platform = entitlement.store === 'app_store' ? 'ios' : 'android'
+  subscription_product_id = entitlement.productIdentifier
+  subscription_purchased_at = entitlement.latestPurchaseDate
+  subscription_is_trial = entitlement.periodType === 'trial'
+
+  Response (200 OK):
+  {
+    "tier": "premium",
+    "status": "active",
+    "expiresAt": "2026-02-18T10:30:00Z",
+    "willRenew": true,
+    "platform": "ios",
+    "productId": "premium_monthly",
+    "purchasedAt": "2026-01-18T10:30:00Z",
+    "isInTrialPeriod": false
+  }
+
+  Error Response (400 Bad Request):
+  {
+    "error": "Invalid purchase data"
+  }
+
+  ---
+  GET /api/subscription/status
+
+  Purpose: Get current user's subscription status
+
+  Authentication: Required (session/JWT)
+
+  Response (200 OK):
+  {
+    "tier": "free",
+    "status": "none",
+    "expiresAt": null,
+    "willRenew": false,
+    "platform": null,
+    "productId": null,
+    "purchasedAt": null,
+    "isInTrialPeriod": false
+  }
+
+  Implementation:
+  // Pseudo-code
+  const user = await getUserFromSession(req);
+
+  // Check if subscription expired
+  if (user.subscription_expires_at && new Date(user.subscription_expires_at) < new Date()) {
+    // Expired - update status
+    await updateUser(user.id, {
+      subscription_tier: 'free',
+      subscription_status: 'expired'
+    });
+  }
+
+  return {
+    tier: user.subscription_tier,
+    status: user.subscription_status,
+    expiresAt: user.subscription_expires_at,
+    willRenew: user.subscription_will_renew,
+    platform: user.subscription_platform,
+    productId: user.subscription_product_id,
+    purchasedAt: user.subscription_purchased_at,
+    isInTrialPeriod: user.subscription_is_trial
+  };
+
+  ---
+  POST /api/subscription/restore
+
+  Purpose: Restore subscription after app reinstall or device transfer
+
+  Authentication: Required
+
+  Request Body:
+  {
+    "revenueCatUserId": "user_123"
+  }
+
+  Implementation:
+  1. Verify the user ID matches the authenticated user
+  2. Make server-to-server call to RevenueCat API to get subscriber info
+  3. Update user's subscription based on RevenueCat response
+  4. Return updated subscription info
+
+  RevenueCat API Call:
+  GET https://api.revenuecat.com/v1/subscribers/{app_user_id}
+  Authorization: Bearer {REVENUECAT_API_KEY}
+
+  Response (200 OK):
+  {
+    "tier": "premium",
+    "status": "active",
+    "expiresAt": "2026-02-18T10:30:00Z",
+    "willRenew": true,
+    "platform": "ios",
+    "productId": "premium_monthly",
+    "purchasedAt": "2026-01-18T10:30:00Z",
+    "isInTrialPeriod": false
+  }
+
+  Response (404 Not Found):
+  {
+    "error": "No active subscription found"
+  }
+
+  ---
+  GET /api/subscription/limits
+
+  Purpose: Get tier limits for the authenticated user
+
+  Authentication: Required
+
+  Response (200 OK):
+  {
+    "maxHabits": 50,
+    "maxTasks": 100,
+    "maxGoals": 10,
+    "hasCalendarSync": false,
+    "hasAdvancedAnalytics": false
+  }
+
+  Premium User Response:
+  {
+    "maxHabits": null,
+    "maxTasks": null,
+    "maxGoals": null,
+    "hasCalendarSync": true,
+    "hasAdvancedAnalytics": true
+  }
+
+  Implementation:
+  const TIER_LIMITS = {
+    free: {
+      maxHabits: 50,
+      maxTasks: 100,
+      maxGoals: 10,
+      hasCalendarSync: false,
+      hasAdvancedAnalytics: false
+    },
+    premium: {
+      maxHabits: null,  // null means unlimited
+      maxTasks: null,
+      maxGoals: null,
+      hasCalendarSync: true,
+      hasAdvancedAnalytics: true
+    }
+  };
+
+  const user = await getUserFromSession(req);
+  return TIER_LIMITS[user.subscription_tier];
+
+  ---
+  POST /api/subscription/webhook - RevenueCat Webhook
+
+  Purpose: Receive subscription events from RevenueCat (renewals, cancellations, refunds)
+
+  Authentication: Verify RevenueCat webhook signature
+
+  Request Body (Example - Renewal):
+  {
+    "event": {
+      "type": "RENEWAL",
+      "app_user_id": "user_123",
+      "product_id": "premium_monthly",
+      "period_type": "NORMAL",
+      "purchased_at_ms": 1705580400000,
+      "expiration_at_ms": 1708258800000,
+      "store": "APP_STORE",
+      "environment": "PRODUCTION"
+    }
+  }
+
+  Event Types to Handle:
+
+  1. INITIAL_PURCHASE - First purchase
+  subscription_tier = 'premium'
+  subscription_status = 'active'
+  subscription_purchased_at = event.purchased_at_ms
+  subscription_expires_at = event.expiration_at_ms
+  subscription_will_renew = true
+  subscription_platform = event.store === 'APP_STORE' ? 'ios' : 'android'
+  subscription_product_id = event.product_id
+  2. RENEWAL - Subscription renewed
+  subscription_expires_at = event.expiration_at_ms
+  subscription_will_renew = true
+  3. CANCELLATION - User cancelled (still active until expiry)
+  subscription_status = 'cancelled'
+  subscription_will_renew = false
+  subscription_cancelled_at = current_timestamp
+  // Don't change tier yet - wait for EXPIRATION event
+  4. EXPIRATION - Subscription expired
+  subscription_tier = 'free'
+  subscription_status = 'expired'
+  subscription_will_renew = false
+  5. BILLING_ISSUE - Payment failed (grace period)
+  subscription_status = 'grace_period'
+  // Keep premium access during grace period
+  6. PRODUCT_CHANGE - Upgraded/downgraded plan
+  subscription_product_id = event.new_product_id
+  subscription_expires_at = event.expiration_at_ms
+
+  Response (200 OK):
+  {
+    "success": true
+  }
+
+  Webhook Signature Verification:
+  const crypto = require('crypto');
+
+  function verifyWebhook(req) {
+    const signature = req.headers['revenuecat-signature'];
+    const body = JSON.stringify(req.body);
+
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.REVENUECAT_WEBHOOK_SECRET)
+      .update(body)
+      .digest('hex');
+
+    return signature === expectedSignature;
+  }
+
+  Setup in RevenueCat Dashboard:
+  1. Go to Project Settings → Webhooks
+  2. Add webhook URL: https://lifeordered.com/api/subscription/webhook
+  3. Select events: INITIAL_PURCHASE, RENEWAL, CANCELLATION, EXPIRATION, BILLING_ISSUE, PRODUCT_CHANGE
+  4. Copy webhook secret to environment variable
+
+  ---
+  4. Environment Variables Required
+
+  # RevenueCat API Keys (for server-to-server calls)
+  REVENUECAT_API_KEY=your_secret_api_key
+
+  # RevenueCat Webhook Secret (for signature verification)
+  REVENUECAT_WEBHOOK_SECRET=your_webhook_secret
+
+  ---
+  5. Helper Functions
+
+  Check if User is Premium
+
+  function isPremium(user) {
+    if (user.subscription_tier !== 'premium') return false;
+    if (user.subscription_status !== 'active') return false;
+
+    // Check expiration
+    if (user.subscription_expires_at) {
+      const now = new Date();
+      const expiresAt = new Date(user.subscription_expires_at);
+      if (now > expiresAt) {
+        // Expired - should be updated by webhook but check here too
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  Check Item Limit
+
+  async function checkItemLimit(userId, itemType) {
+    const user = await getUser(userId);
+
+    const limits = {
+      free: { habits: 50, tasks: 100, goals: 10 },
+      premium: { habits: Infinity, tasks: Infinity, goals: Infinity }
+    };
+
+    const limit = limits[user.subscription_tier][itemType];
+    const count = await countUserItems(userId, itemType);
+
+    if (count >= limit) {
+      throw {
+        status: 429,
+        error: "Limit exceeded",
+        details: {
+          limit: limit === Infinity ? null : limit,
+          current: count,
+          feature: itemType,
+          tier: user.subscription_tier,
+          upgradeRequired: user.subscription_tier === 'free'
+        }
+      };
+    }
+  }
+
+  ---
+  6. Migration Script
+
+  For Existing Users:
+
+  -- Set all existing users to free tier with no subscription
+  UPDATE users
+  SET
+    subscription_tier = 'free',
+    subscription_status = 'none',
+    subscription_expires_at = NULL,
+    subscription_will_renew = false,
+    subscription_platform = NULL,
+    subscription_product_id = NULL,
+    subscription_purchased_at = NULL,
+    subscription_is_trial = false
+  WHERE subscription_tier IS NULL;
+
+  ---
+  7. Testing Checklist
+
+  Manual Testing:
+
+  - GET /api/auth/user returns subscription object
+  - Free user can create 50 habits, 51st returns 429
+  - Free user can create 100 tasks, 101st returns 429
+  - Free user can create 10 goals, 11th returns 429
+  - POST /api/subscription/validate updates user to premium
+  - Premium user can create unlimited items
+  - GET /api/subscription/limits returns correct limits
+  - POST /api/subscription/restore syncs with RevenueCat
+
+  Webhook Testing:
+
+  - INITIAL_PURCHASE event upgrades user to premium
+  - RENEWAL event updates expiration date
+  - CANCELLATION event sets will_renew to false
+  - EXPIRATION event downgrades user to free
+  - Webhook signature verification works
+
+  ---
+  8. RevenueCat Setup Required
+
+  1. Create Account: https://www.revenuecat.com
+  2. Add Project: Create "Life | Ordered" project
+  3. Add Apps:
+    - iOS app (bundle ID from App Store Connect)
+    - Android app (package name from Play Console)
+  4. Configure Products:
+    - Create entitlement: "premium"
+    - Add products: "premium_monthly", "premium_annual"
+    - Link to App Store/Play Store products
+  5. Get API Keys:
+    - Public SDK keys (for mobile app - already in plan)
+    - Secret API key (for server-to-server calls)
+  6. Setup Webhook:
+    - URL: https://lifeordered.com/api/subscription/webhook
+    - Copy webhook secret
+    - Enable events: INITIAL_PURCHASE, RENEWAL, CANCELLATION, EXPIRATION
+
+  ---
+  9. Summary of Changes
+
+  Database:
+  - Add 10 columns to users table for subscription data
+
+  Modified Endpoints (3):
+  - GET /api/auth/user - Add subscription object
+  - POST /api/habits - Add limit check (429 error)
+  - POST /api/tasks - Add limit check (429 error)
+  - POST /api/goals - Add limit check (429 error)
+
+  New Endpoints (4):
+  - POST /api/subscription/validate - Validate purchases
+  - GET /api/subscription/status - Get subscription status
+  - POST /api/subscription/restore - Restore purchases
+  - GET /api/subscription/limits - Get tier limits
+  - POST /api/subscription/webhook - Handle RevenueCat events
+
+  Environment Variables (2):
+  - REVENUECAT_API_KEY - For server calls
+  - REVENUECAT_WEBHOOK_SECRET - For webhook verification
+
+  ---
+  This spec provides everything your backend developer needs to implement the subscription system!

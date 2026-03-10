@@ -1,0 +1,87 @@
+Updated Backend Spec: Recipe with Parsed Ingredients
+
+  Enhanced Data Model
+
+  interface ParsedIngredient {
+    amount: string | null;        // "2", "1/2", "1-2", null for "to taste"
+    unit: string | null;          // "cups", "tsp", "oz", "g", null for "whole"
+    ingredient: string;           // "all-purpose flour", "eggs"
+    originalText: string;         // "2 cups all-purpose flour"
+    notes?: string;               // "softened", "chopped", "divided"
+  }
+
+  interface Recipe {
+    // ... existing fields ...
+    ingredients: string[];              // Keep original for display
+    parsedIngredients: ParsedIngredient[];  // NEW: Structured data
+  }
+
+  Backend Implementation
+
+  1. Ingredient Parser
+
+  You'll need to parse ingredient strings. Recommended library: ingredient-parser or parse-ingredient (npm)
+
+  Example parsing:
+  // Input: "2 cups all-purpose flour, sifted"
+  // Output:
+  {
+    amount: "2",
+    unit: "cups",
+    ingredient: "all-purpose flour",
+    originalText: "2 cups all-purpose flour, sifted",
+    notes: "sifted"
+  }
+
+  // Input: "3 large eggs"
+  {
+    amount: "3",
+    unit: null,
+    ingredient: "eggs",
+    originalText: "3 large eggs",
+    notes: "large"
+  }
+
+  // Input: "Salt to taste"
+  {
+    amount: null,
+    unit: null,
+    ingredient: "salt",
+    originalText: "Salt to taste",
+    notes: "to taste"
+  }
+
+  2. Updated API Response
+
+  POST /api/recipes/from-url response:
+  {
+    "id": "uuid",
+    "ingredients": [
+      "2 cups all-purpose flour",
+      "1 tsp baking soda",
+      "1/2 cup butter, softened"
+    ],
+    "parsedIngredients": [
+      {
+        "amount": "2",
+        "unit": "cups",
+        "ingredient": "all-purpose flour",
+        "originalText": "2 cups all-purpose flour",
+        "notes": null
+      },
+      {
+        "amount": "1",
+        "unit": "tsp",
+        "ingredient": "baking soda",
+        "originalText": "1 tsp baking soda",
+        "notes": null
+      },
+      {
+        "amount": "1/2",
+        "unit": "cup",
+        "ingredient": "butter",
+        "originalText": "1/2 cup butter, softened",
+        "notes": "softened"
+      }
+    ]
+  }

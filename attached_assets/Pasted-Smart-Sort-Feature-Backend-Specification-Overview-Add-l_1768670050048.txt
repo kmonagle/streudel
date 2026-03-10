@@ -1,0 +1,136 @@
+Smart Sort Feature - Backend Specification
+
+  Overview
+
+  Add learning-based auto-sort for the Today screen. Track user's manual sorting patterns over time and provide a suggested order based on historical preferences.
+
+  Database Changes
+
+  Create new table to store sort events:
+
+  CREATE TABLE today_sort_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    sorted_at TIMESTAMP DEFAULT NOW(),
+    item_order JSONB NOT NULL,
+    CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX idx_today_sort_events_user_date ON today_sort_events(user_id, sorted_at DESC);
+
+  item_order JSONB format:
+  [
+    {"id": "uuid-1", "type": "habit", "position": 0},
+    {"id": "uuid-2", "type": "task", "position": 1},
+    {"id": "uuid-3", "type": "habit", "position": 2}
+  ]
+
+  ---
+  API Endpoints
+
+  1. Record Sort Event
+
+  POST /api/today/sort-history
+
+  Called whenever user manually reorders Today items via drag-and-drop.
+
+  Request Body:
+  {
+    "items": [
+      {"id": "uuid", "type": "habit", "position": 0},
+      {"id": "uuid", "type": "task", "position": 1}
+    ]
+  }
+
+  Logic:
+  1. Validate authentication (use existing auth middleware)
+  2. Validate request:
+    - items is required array
+    - Each item has id (UUID), type (habit|task), position (integer >= 0)
+  3. Insert new row into today_sort_events:
+    - user_id: from authenticated user
+    - sorted_at: current timestamp
+    - item_order: the items array as JSONB
+
+  Response:
+  201 Created
+
+  Error responses:
+  - 400 Bad Request if validation fails
+  - 401 Unauthorized if not authenticated
+
+  ---
+  2. Get Suggested Order
+
+  GET /api/today/suggested-order
+
+  Returns learned ordering preferences based on last 30 days of sort history.
+
+  Response:
+  {
+    "suggestedOrder": [
+      {"id": "uuid-1", "type": "habit", "averagePosition": 0.5, "appearances": 28},
+      {"id": "uuid-2", "type": "task", "averagePosition": 1.3, "appearances": 15},
+      {"id": "uuid-3", "type": "habit", "averagePosition": 2.1, "appearances": 30}
+    ]
+  }
+
+  Logic:
+  1. Get all Today items for authenticated user:
+    - Tasks where isToday = true AND completed = false
+    - Habits where isToday = true AND completedToday = false
+  2. Query today_sort_events for last 30 days:
+  SELECT item_order FROM today_sort_events
+  WHERE user_id = :userId
+  AND sorted_at >= NOW() - INTERVAL '30 days'
+  ORDER BY sorted_at DESC;
+  3. For each Today item:
+    - Iterate through all sort events
+    - Extract positions where this item appears (matching by id)
+    - Calculate average position across all appearances
+    - Count total appearances
+    - Items that never appeared in history get averagePosition = 999
+  4. Sort items by averagePosition (ascending)
+  5. Return sorted array
+
+  Example calculation:
+  - Item "meditation-uuid" appeared at positions [0, 0, 1, 0] across 4 events
+  - Average = (0+0+1+0)/4 = 0.25
+  - Item gets averagePosition: 0.25, appearances: 4
+
+  Response for items with no history:
+  {
+    "id": "new-task-uuid",
+    "type": "task",
+    "averagePosition": 999,
+    "appearances": 0
+  }
+
+  ---
+  Implementation Notes
+
+  1. Authentication: All endpoints require authenticated user (reuse existing auth middleware)
+  2. Performance: The position calculation algorithm:
+  // Pseudocode
+  for each todayItem:
+    positions = []
+    for each sortEvent in last30Days:
+      for each item in sortEvent.item_order:
+        if item.id === todayItem.id:
+          positions.push(item.position)
+
+    averagePosition = positions.length > 0
+      ? sum(positions) / positions.length
+      : 999
+  3. Data retention: Add cleanup job (cron/scheduled task) to delete old events:
+  DELETE FROM today_sort_events
+  WHERE sorted_at < NOW() - INTERVAL '90 days';
+  3. Recommended: Run daily or weekly
+  4. Edge cases:
+    - User has no sort history: return all items with averagePosition: 999
+    - Item deleted but exists in history: ignore it (only return current Today items)
+    - Same item appears in multiple positions in one event: shouldn't happen, but use first occurrence if it does
+  5. Future enhancements (not required for MVP):
+    - Day-of-week patterns (weekday vs weekend sorting)
+    - Time-of-day analysis
+    - Item clustering (items that move together)

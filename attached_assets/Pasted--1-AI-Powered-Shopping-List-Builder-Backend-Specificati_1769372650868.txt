@@ -1,0 +1,666 @@
+ 1 # AI-Powered Shopping List Builder - Backend Specification
+    2
+    3 ## Overview
+    4 This endpoint replaces all frontend categorization and sorting logic for shopping lists. It uses Claude
+       Haiku to intelligently categorize ingredients by grocery store sections and sort them for efficient sh
+      opping.
+    5
+    6 ## Endpoint
+    7
+    8 **POST** `/api/recipe-queue/build-shopping-list`
+    9
+   10 ## Request
+   11
+   12 ### Headers
+   13 - `Authorization: Bearer <jwt_token>` (standard auth)
+   14 - `Content-Type: application/json`
+   15
+   16 ### Body
+   17 ```typescript
+   18 {
+   19   goalName?: string; // Optional, defaults to "Shopping List"
+   20 }
+   21 ```
+   22
+   23 ### Example Request
+   24 ```json
+   25 {
+   26   "goalName": "Weekend Groceries"
+   27 }
+   28 ```
+   29
+   30 ## Response
+   31
+   32 ### Success Response (200)
+   33 Returns a Goal object with tasks sorted by grocery store category:
+   34
+   35 ```typescript
+   36 {
+   37   id: string;
+   38   title: string;
+   39   description: string;
+   40   color: string;
+   41   isArchived: boolean;
+   42   isHabitGoal: boolean;
+   43   sortOrder: number;
+   44   userId: string;
+   45   tasks?: Task[]; // Optional, may be included depending on backend implementation
+   46 }
+   47 ```
+   48
+   49 ### Example Response
+   50 ```json
+   51 {
+   52   "id": "goal-123",
+   53   "title": "Shopping List",
+   54   "description": "Generated from 3 recipes",
+   55   "color": "#10B981",
+   56   "isArchived": false,
+   57   "isHabitGoal": false,
+   58   "sortOrder": 0,
+   59   "userId": "user-456"
+   60 }
+   61 ```
+   62
+   63 **Note:** The tasks are created and associated with this goal. The frontend will fetch them via the sta
+      ndard goal tasks endpoint.
+   64
+   65 ### Error Responses
+   66
+   67 **400 Bad Request**
+   68 ```json
+   69 {
+   70   "error": "No recipes in queue"
+   71 }
+   72 ```
+   73
+   74 **401 Unauthorized**
+   75 ```json
+   76 {
+   77   "error": "Authentication required"
+   78 }
+   79 ```
+   80
+   81 **500 Internal Server Error**
+   82 ```json
+   83 {
+   84   "error": "Failed to categorize ingredients with AI"
+   85 }
+   86 ```
+   87
+   88 ## Implementation Requirements
+   89
+   90 ### Step 1: Get Recipe Queue
+   91 Fetch all recipes in the user's queue with full recipe data including `parsedIngredients`.
+   92
+   93 ```sql
+   94 SELECT rq.*, r.*
+   95 FROM recipe_queue rq
+   96 JOIN recipes r ON rq.recipe_id = r.id
+   97 WHERE rq.user_id = $1
+   98 ORDER BY rq.sort_order ASC
+   99 ```
+  100
+  101 ### Step 2: Collect and Scale Ingredients
+  102 For each recipe in the queue:
+  103 - Get `parsedIngredients` array
+  104 - Apply `servingMultiplier` to scale amounts
+  105 - Create a flat list of all ingredients
+  106
+  107 **Scaling Logic:**
+  108 ```javascript
+  109 function scaleAmount(amount, multiplier) {
+  110   if (!amount || multiplier === 1) return amount;
+  111
+  112   // Handle fractions like "1/2"
+  113   let numeric;
+  114   if (amount.includes('/')) {
+  115     const [num, denom] = amount.split('/').map(Number);
+  116     numeric = num / denom;
+  117   } else {
+  118     numeric = parseFloat(amount);
+  119   }
+  120
+  121   const scaled = numeric * multiplier;
+  122
+  123   // Format nicely
+  124   if (scaled % 1 === 0) return scaled.toString();
+  125   if (scaled < 1) {
+  126     // Try common fractions
+  127     const fractions = [[1,4], [1,3], [1,2], [2,3], [3,4]];
+  128     for (const [n, d] of fractions) {
+  129       if (Math.abs(scaled - n/d) < 0.05) return `${n}/${d}`;
+  130     }
+  131   }
+  132   return scaled.toFixed(2).replace(/\.?0+$/, '');
+  133 }
+  134 ```
+  135
+  136 ### Step 3: Call Claude Haiku for Categorization
+  137
+  138 **IMPORTANT:** This is the core AI categorization step that replaces all frontend logic.
+  139
+  140 #### Install Anthropic SDK
+  141 ```bash
+  142 npm install @anthropic-ai/sdk
+  143 # or
+  144 pip install anthropic
+  145 ```
+  146
+  147 #### Environment Variable
+  148 Set `ANTHROPIC_API_KEY` in your backend environment.
+  149
+  150 #### Claude API Call
+  151
+  152 **Model:** `claude-3-5-haiku-20241022`
+  153 **Max Tokens:** 4000
+  154 **Temperature:** 0 (deterministic output)
+  155
+  156 **System Prompt:**
+  157 ```
+  158 You are a grocery shopping assistant. Categorize ingredients by standard grocery store sections and sor
+      t them for efficient shopping.
+  159
+  160 Your categories must be EXACTLY one of these (case-sensitive):
+  161 - Produce
+  162 - Dairy
+  163 - Meat
+  164 - Seafood
+  165 - Bakery
+  166 - Canned Goods
+  167 - Dry Goods
+  168 - Pasta & Rice
+  169 - Frozen
+  170 - Beverages
+  171 - Condiments
+  172 - Spices
+  173 - Baking
+  174 - Other
+  175
+  176 Rules:
+  177 1. Group duplicate ingredients together (e.g., multiple "kale" entries should be adjacent)
+  178 2. Within each category, sort alphabetically by ingredient name
+  179 3. Return ONLY valid JSON, no markdown or explanation
+  180 4. Use the exact category names listed above
+  181 ```
+  182
+  183 **User Prompt Template:**
+  184 ```
+  185 Categorize and sort these grocery items. Return a JSON array where each item has:
+  186 - ingredient: the ingredient name
+  187 - amount: the amount/quantity (preserve exactly as given)
+  188 - unit: the unit of measurement
+  189 - category: one of the valid categories from the system prompt
+  190 - recipeNames: array of recipe titles using this ingredient
+  191
+  192 Input ingredients:
+  193 {{INGREDIENTS_JSON}}
+  194
+  195 Return format:
+  196 [
+  197   {
+  198     "ingredient": "kale",
+  199     "amount": "2",
+  200     "unit": "cups",
+  201     "category": "Produce",
+  202     "recipeNames": ["Kale Salad", "Green Smoothie"]
+  203   },
+  204   ...
+  205 ]
+  206
+  207 Group duplicate ingredients (same name + unit) together, sum their amounts, and combine recipe names.
+  208 Sort by category (in the order listed in system prompt), then alphabetically within each category.
+  209 ```
+  210
+  211 **Example Input to Claude:**
+  212 ```json
+  213 [
+  214   {
+  215     "ingredient": "kale",
+  216     "amount": "1",
+  217     "unit": "cup",
+  218     "recipeName": "Kale Salad"
+  219   },
+  220   {
+  221     "ingredient": "chicken breast",
+  222     "amount": "2",
+  223     "unit": "lbs",
+  224     "recipeName": "Grilled Chicken"
+  225   },
+  226   {
+  227     "ingredient": "kale",
+  228     "amount": "1",
+  229     "unit": "cup",
+  230     "recipeName": "Green Smoothie"
+  231   },
+  232   {
+  233     "ingredient": "olive oil",
+  234     "amount": "2",
+  235     "unit": "tbsp",
+  236     "recipeName": "Kale Salad"
+  237   }
+  238 ]
+  239 ```
+  240
+  241 **Expected Output from Claude:**
+  242 ```json
+  243 [
+  244   {
+  245     "ingredient": "kale",
+  246     "amount": "2",
+  247     "unit": "cup",
+  248     "category": "Produce",
+  249     "recipeNames": ["Kale Salad", "Green Smoothie"]
+  250   },
+  251   {
+  252     "ingredient": "chicken breast",
+  253     "amount": "2",
+  254     "unit": "lbs",
+  255     "category": "Meat",
+  256     "recipeNames": ["Grilled Chicken"]
+  257   },
+  258   {
+  259     "ingredient": "olive oil",
+  260     "amount": "2",
+  261     "unit": "tbsp",
+  262     "category": "Condiments",
+  263     "recipeNames": ["Kale Salad"]
+  264   }
+  265 ]
+  266 ```
+  267
+  268 #### Implementation Example (Node.js)
+  269
+  270 ```javascript
+  271 import Anthropic from '@anthropic-ai/sdk';
+  272
+  273 const anthropic = new Anthropic({
+  274   apiKey: process.env.ANTHROPIC_API_KEY,
+  275 });
+  276
+  277 async function categorizeIngredients(ingredients) {
+  278   const message = await anthropic.messages.create({
+  279     model: 'claude-3-5-haiku-20241022',
+  280     max_tokens: 4000,
+  281     temperature: 0,
+  282     system: `You are a grocery shopping assistant. Categorize ingredients by standard grocery store sec
+      tions and sort them for efficient shopping.
+  283
+  284 Your categories must be EXACTLY one of these (case-sensitive):
+  285 - Produce
+  286 - Dairy
+  287 - Meat
+  288 - Seafood
+  289 - Bakery
+  290 - Canned Goods
+  291 - Dry Goods
+  292 - Pasta & Rice
+  293 - Frozen
+  294 - Beverages
+  295 - Condiments
+  296 - Spices
+  297 - Baking
+  298 - Other
+  299
+  300 Rules:
+  301 1. Group duplicate ingredients together (e.g., multiple "kale" entries should be adjacent)
+  302 2. Within each category, sort alphabetically by ingredient name
+  303 3. Return ONLY valid JSON, no markdown or explanation
+  304 4. Use the exact category names listed above`,
+  305     messages: [
+  306       {
+  307         role: 'user',
+  308         content: `Categorize and sort these grocery items. Return a JSON array where each item has:
+  309 - ingredient: the ingredient name
+  310 - amount: the amount/quantity (preserve exactly as given)
+  311 - unit: the unit of measurement
+  312 - category: one of the valid categories from the system prompt
+  313 - recipeNames: array of recipe titles using this ingredient
+  314
+  315 Input ingredients:
+  316 ${JSON.stringify(ingredients, null, 2)}
+  317
+  318 Return format:
+  319 [
+  320   {
+  321     "ingredient": "kale",
+  322     "amount": "2",
+  323     "unit": "cups",
+  324     "category": "Produce",
+  325     "recipeNames": ["Kale Salad", "Green Smoothie"]
+  326   },
+  327   ...
+  328 ]
+  329
+  330 Group duplicate ingredients (same name + unit) together, sum their amounts, and combine recipe names.
+  331 Sort by category (in the order listed in system prompt), then alphabetically within each category.`
+  332       }
+  333     ]
+  334   });
+  335
+  336   const responseText = message.content[0].text;
+  337
+  338   // Parse JSON response (handle potential markdown wrapping)
+  339   const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+  340   if (!jsonMatch) {
+  341     throw new Error('Invalid response from Claude');
+  342   }
+  343
+  344   return JSON.parse(jsonMatch[0]);
+  345 }
+  346 ```
+  347
+  348 #### Implementation Example (Python)
+  349
+  350 ```python
+  351 import anthropic
+  352 import json
+  353 import os
+  354
+  355 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+  356
+  357 def categorize_ingredients(ingredients):
+  358     message = client.messages.create(
+  359         model="claude-3-5-haiku-20241022",
+  360         max_tokens=4000,
+  361         temperature=0,
+  362         system="""You are a grocery shopping assistant. Categorize ingredients by standard grocery stor
+      e sections and sort them for efficient shopping.
+  363
+  364 Your categories must be EXACTLY one of these (case-sensitive):
+  365 - Produce
+  366 - Dairy
+  367 - Meat
+  368 - Seafood
+  369 - Bakery
+  370 - Canned Goods
+  371 - Dry Goods
+  372 - Pasta & Rice
+  373 - Frozen
+  374 - Beverages
+  375 - Condiments
+  376 - Spices
+  377 - Baking
+  378 - Other
+  379
+  380 Rules:
+  381 1. Group duplicate ingredients together (e.g., multiple "kale" entries should be adjacent)
+  382 2. Within each category, sort alphabetically by ingredient name
+  383 3. Return ONLY valid JSON, no markdown or explanation
+  384 4. Use the exact category names listed above""",
+  385         messages=[
+  386             {
+  387                 "role": "user",
+  388                 "content": f"""Categorize and sort these grocery items. Return a JSON array where each
+      item has:
+  389 - ingredient: the ingredient name
+  390 - amount: the amount/quantity (preserve exactly as given)
+  391 - unit: the unit of measurement
+  392 - category: one of the valid categories from the system prompt
+  393 - recipeNames: array of recipe titles using this ingredient
+  394
+  395 Input ingredients:
+  396 {json.dumps(ingredients, indent=2)}
+  397
+  398 Return format:
+  399 [
+  400   {{
+  401     "ingredient": "kale",
+  402     "amount": "2",
+  403     "unit": "cups",
+  404     "category": "Produce",
+  405     "recipeNames": ["Kale Salad", "Green Smoothie"]
+  406   }},
+  407   ...
+  408 ]
+  409
+  410 Group duplicate ingredients (same name + unit) together, sum their amounts, and combine recipe names.
+  411 Sort by category (in the order listed in system prompt), then alphabetically within each category."""
+  412             }
+  413         ]
+  414     )
+  415
+  416     response_text = message.content[0].text
+  417
+  418     # Parse JSON response
+  419     import re
+  420     json_match = re.search(r'\[[\s\S]*\]', response_text)
+  421     if not json_match:
+  422         raise ValueError('Invalid response from Claude')
+  423
+  424     return json.loads(json_match.group(0))
+  425 ```
+  426
+  427 ### Step 4: Create Goal
+  428
+  429 Create the shopping list goal:
+  430
+  431 ```javascript
+  432 const goal = await createGoal({
+  433   userId: authenticatedUserId,
+  434   title: goalName || 'Shopping List',
+  435   description: `Generated from ${recipeQueue.length} recipe${recipeQueue.length === 1 ? '' : 's'}`,
+  436   color: '#10B981', // Green
+  437   isHabitGoal: false,
+  438   isArchived: false,
+  439   sortOrder: 0 // Or next available sort order
+  440 });
+  441 ```
+  442
+  443 ### Step 5: Create Tasks
+  444
+  445 The categorized ingredients from Claude are already sorted properly. Create tasks in that exact order:
+  446
+  447 ```javascript
+  448 const CATEGORY_SORT_ORDER = {
+  449   'Produce': 0,
+  450   'Dairy': 100,
+  451   'Meat': 200,
+  452   'Seafood': 300,
+  453   'Bakery': 400,
+  454   'Canned Goods': 500,
+  455   'Dry Goods': 600,
+  456   'Pasta & Rice': 700,
+  457   'Frozen': 800,
+  458   'Beverages': 900,
+  459   'Condiments': 1000,
+  460   'Spices': 1100,
+  461   'Baking': 1200,
+  462   'Other': 9000
+  463 };
+  464
+  465 const tasksToCreate = categorizedIngredients.map((item, index) => {
+  466   // Build title
+  467   const amountPart = item.amount && item.unit
+  468     ? `${item.amount} ${item.unit}`
+  469     : item.amount || '';
+  470   const title = amountPart
+  471     ? `${amountPart} ${item.ingredient}`
+  472     : item.ingredient;
+  473
+  474   // Build notes
+  475   const notes = `from ${item.recipeNames.join(', ')}`;
+  476
+  477   // Calculate sort order: category base + index within category
+  478   const categoryBase = CATEGORY_SORT_ORDER[item.category] || CATEGORY_SORT_ORDER['Other'];
+  479   const sortOrder = categoryBase + index;
+  480
+  481   return {
+  482     title,
+  483     notes,
+  484     goalId: goal.id,
+  485     completed: false,
+  486     isToday: false,
+  487     sortOrder
+  488   };
+  489 });
+  490
+  491 // Bulk create tasks (use transaction if possible)
+  492 await bulkCreateTasks(tasksToCreate);
+  493 ```
+  494
+  495 **Important:** The sortOrder ensures tasks stay grouped by category even when fetched from the database
+      .
+  496
+  497 ### Step 6: Return Goal
+  498
+  499 Return the created goal object to the frontend.
+  500
+  501 ## Error Handling
+  502
+  503 ### Claude API Errors
+  504 - **Rate Limit:** Return 429 with retry-after header
+  505 - **Invalid API Key:** Return 500, log error securely
+  506 - **Timeout:** Retry once, then fail with 500
+  507 - **Invalid JSON Response:** Log response, return 500 with helpful message
+  508
+  509 ### Fallback Behavior
+  510 If Claude API fails after retries, you have two options:
+  511
+  512 **Option A: Fail Fast** (Recommended)
+  513 Return 500 error to user with message: "Failed to categorize ingredients. Please try again."
+  514
+  515 **Option B: Simple Fallback**
+  516 Create unsorted shopping list with all items in "Other" category (not recommended as it defeats the pur
+      pose).
+  517
+  518 ## Performance Considerations
+  519
+  520 ### Caching
+  521 - Consider caching ingredient → category mappings for common ingredients
+  522 - Cache key: `ingredient_name:unit`
+  523 - TTL: 7 days
+  524 - Only call Claude for uncached ingredients
+  525
+  526 ### Batching
+  527 - Claude Haiku can handle up to ~200 ingredients in a single call
+  528 - If recipe queue > 50 recipes, consider warning user or batching
+  529
+  530 ### Cost
+  531 - Claude Haiku pricing: ~$0.25 per million input tokens, ~$1.25 per million output tokens
+  532 - Average shopping list: ~100-300 tokens input, ~200-500 tokens output
+  533 - Cost per request: < $0.001 (less than 1/10th of a cent)
+  534
+  535 ## Testing
+  536
+  537 ### Test Cases
+  538
+  539 **Test 1: Empty Queue**
+  540 ```
+  541 Request: POST /api/recipe-queue/build-shopping-list
+  542 Expected: 400 "No recipes in queue"
+  543 ```
+  544
+  545 **Test 2: Single Recipe**
+  546 ```
+  547 Request: POST with 1 recipe in queue (5 ingredients)
+  548 Expected: 200 with goal + 5 tasks sorted by category
+  549 ```
+  550
+  551 **Test 3: Duplicate Ingredients**
+  552 ```
+  553 Request: POST with 2 recipes both using "kale"
+  554 Expected: Single kale task with combined amount and both recipe names
+  555 ```
+  556
+  557 **Test 4: All Categories**
+  558 ```
+  559 Request: POST with recipes covering all 14 categories
+  560 Expected: Tasks sorted with Produce first, Other last
+  561 ```
+  562
+  563 **Test 5: Custom Goal Name**
+  564 ```
+  565 Request: POST { "goalName": "Weekend Shopping" }
+  566 Expected: Goal with title "Weekend Shopping"
+  567 ```
+  568
+  569 ### Sample Test Data
+  570
+  571 Create test recipes with these ingredients to verify categorization:
+  572 - Kale (should be Produce)
+  573 - Milk (should be Dairy)
+  574 - Chicken (should be Meat)
+  575 - Salmon (should be Seafood)
+  576 - Bread (should be Bakery)
+  577 - Tomato sauce (should be Canned Goods)
+  578 - Flour (should be Dry Goods)
+  579 - Pasta (should be Pasta & Rice)
+  580 - Ice cream (should be Frozen)
+  581 - Orange juice (should be Beverages)
+  582 - Soy sauce (should be Condiments)
+  583 - Cinnamon (should be Spices)
+  584 - Baking powder (should be Baking)
+  585
+  586 ## Migration Notes
+  587
+  588 ### Removing Frontend Logic
+  589 After this endpoint is implemented, the following frontend code can be removed from `app/(tabs)/mystuff
+      .tsx`:
+  590
+  591 - `AISLE_SORT_ORDER` constant (lines 996-1011)
+  592 - `correctAisle` function (lines 1014-1208)
+  593 - `scaleIngredientAmount` function (lines 1210-1240)
+  594 - Most of `handleBuildShoppingList` function (lines 1242-1393)
+  595
+  596 ### New Frontend Code
+  597 Replace with a simple call to the backend:
+  598
+  599 ```typescript
+  600 const handleBuildShoppingList = async () => {
+  601   if (recipeQueue.length === 0) {
+  602     Alert.alert('No Recipes in Queue', 'Add some recipes to your queue first');
+  603     return;
+  604   }
+  605
+  606   try {
+  607     const goal = await recipeQueueApi.buildShoppingList({
+  608       goalName: 'Shopping List'
+  609     });
+  610
+  611     await loadData();
+  612
+  613     Alert.alert(
+  614       'Shopping List Created',
+  615       `Created shopping list from ${recipeQueue.length} recipe${recipeQueue.length === 1 ? '' : 's'}`,
+  616       [{ text: 'OK', onPress: () => setExpandedGoals(new Set([goal.id])) }]
+  617     );
+  618   } catch (error: any) {
+  619     console.error('Failed to build shopping list:', error);
+  620     Alert.alert('Error', error?.error || 'Failed to build shopping list');
+  621   }
+  622 };
+  623 ```
+  624
+  625 ## API Key Management
+  626
+  627 **Environment Variable:**
+  628 ```bash
+  629 ANTHROPIC_API_KEY=sk-ant-api03-...
+  630 ```
+  631
+  632 **Security:**
+  633 - NEVER commit API key to git
+  634 - Use environment variables or secrets manager
+  635 - Rotate key periodically
+  636 - Monitor usage at console.anthropic.com
+  637
+  638 **Getting an API Key:**
+  639 1. Sign up at https://console.anthropic.com
+  640 2. Go to API Keys section
+  641 3. Create new key
+  642 4. Add to backend environment
+  643
+  644 ## Summary
+  645
+  646 This endpoint:
+  647 1. ✅ Fetches all recipes from user's queue
+  648 2. ✅ Scales ingredients by serving multiplier
+  649 3. ✅ Uses Claude Haiku to intelligently categorize by grocery store section
+  650 4. ✅ Groups duplicate ingredients (e.g., multiple kale entries)
+  651 5. ✅ Sorts by category then alphabetically within category
+  652 6. ✅ Creates goal with sorted tasks
+  653 7. ✅ Returns goal to frontend
+  654
+  655 **Result:** A perfectly organized shopping list that groups items by store section (Produce, Dairy, Mea
+      t, etc.) with duplicates consolidated, ready for efficient shopping.

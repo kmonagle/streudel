@@ -1,0 +1,553 @@
+Backend Spec: Recipe Ingredients with Spoonacular Categorization
+
+  Overview
+
+  Enhance recipe functionality with parsed ingredients and automatic categorization using Spoonacular API. Implement global caching to minimize API usage and ensure fast lookups.
+
+  ---
+  1. Environment Configuration
+
+  Add to .env:
+  SPOONACULAR_API_KEY=your_api_key_here
+
+  Get API key from: https://spoonacular.com/food-api/console#Dashboard
+
+  ---
+  2. Updated Data Models
+
+  Recipe (Enhanced)
+
+  interface ParsedIngredient {
+    amount: string | null;        // "2", "1/2", "1-2", null for "to taste"
+    unit: string | null;          // "cups", "tsp", "oz", "g", null for "whole"
+    ingredient: string;           // "all-purpose flour" (normalized, lowercase)
+    originalText: string;         // "2 cups all-purpose flour"
+    notes: string | null;         // "softened", "chopped", "divided"
+    category: string | null;      // "Baking" (from Spoonacular or cache)
+    aisle: string | null;         // "Baking" (from Spoonacular)
+  }
+
+  interface Recipe {
+    id: string;
+    userId: string;
+    url: string;
+    title: string;
+    imageUrl: string | null;
+    description: string | null;
+    ingredients: string[];              // Original strings for display
+    parsedIngredients: ParsedIngredient[];  // NEW: Structured + categorized
+    instructions: string[];
+    prepTime: string | null;
+    cookTime: string | null;
+    totalTime: string | null;
+    servings: string | null;
+    cuisine: string | null;
+    category: string | null;
+    notes: string | null;
+    createdAt: timestamp;
+    updatedAt: timestamp;
+  }
+
+  Ingredient Categories Cache (Global)
+
+  interface IngredientCategory {
+    ingredient: string;           // "chicken breast" (normalized, lowercase, PRIMARY KEY)
+    category: string;             // "Meat"
+    aisle: string | null;         // "Meat Department"
+    spoonacularId: number | null; // Spoonacular ingredient ID
+    imageUrl: string | null;      // Ingredient image from Spoonacular
+    source: 'spoonacular' | 'manual' | 'fallback';
+    createdAt: timestamp;
+    updatedAt: timestamp;
+  }
+
+  ---
+  3. Database Schema (SQL)
+
+  -- Enhanced recipes table
+  CREATE TABLE recipes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    image_url TEXT,
+    description TEXT,
+    ingredients JSONB NOT NULL DEFAULT '[]',          -- Array of strings
+    parsed_ingredients JSONB NOT NULL DEFAULT '[]',   -- Array of ParsedIngredient objects
+    instructions JSONB NOT NULL DEFAULT '[]',
+    prep_time TEXT,
+    cook_time TEXT,
+    total_time TEXT,
+    servings TEXT,
+    cuisine TEXT,
+    category TEXT,
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+
+  -- Global ingredient categories cache
+  CREATE TABLE ingredient_categories (
+    ingredient VARCHAR(255) PRIMARY KEY,  -- normalized lowercase
+    category VARCHAR(100) NOT NULL,
+    aisle VARCHAR(100),
+    spoonacular_id INTEGER,
+    image_url TEXT,
+    source VARCHAR(20) NOT NULL DEFAULT 'spoonacular',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_ingredient_category ON ingredient_categories(category);
+  CREATE INDEX idx_ingredient_source ON ingredient_categories(source);
+
+  ---
+  4. Spoonacular API Integration
+
+  API Endpoint
+
+  Ingredient Search:
+  GET https://api.spoonacular.com/food/ingredients/search
+
+  Get Ingredient Info:
+  GET https://api.spoonacular.com/food/ingredients/{id}/information
+
+  Authentication
+
+  Add to request headers or query params:
+  ?apiKey=YOUR_API_KEY
+
+  Example Request/Response
+
+  Search for ingredient:
+  GET https://api.spoonacular.com/food/ingredients/search?query=chicken%20breast&apiKey=YOUR_KEY
+
+  Response:
+  {
+    "results": [
+      {
+        "id": 5062,
+        "name": "chicken breast",
+        "image": "chicken-breasts.png"
+      }
+    ]
+  }
+
+  Get ingredient details:
+  GET https://api.spoonacular.com/food/ingredients/5062/information?apiKey=YOUR_KEY
+
+  Response:
+  {
+    "id": 5062,
+    "name": "chicken breast",
+    "image": "chicken-breasts.png",
+    "aisle": "Meat",
+    "categoryPath": ["Meat", "Poultry"]
+  }
+
+  ---
+  5. Ingredient Parsing & Categorization Logic
+
+  Step-by-Step Process
+
+  When importing a recipe:
+
+  1. Parse each ingredient string using ingredient-parser-nlp or similar:
+  const parser = require('ingredient-parser-nlp');
+
+  // Input: "2 cups all-purpose flour, sifted"
+  const parsed = parser.parse("2 cups all-purpose flour, sifted");
+  // {
+  //   quantity: 2,
+  //   unit: 'cup',
+  //   ingredient: 'all-purpose flour',
+  //   preparation: 'sifted'
+  // }
+  2. Normalize ingredient name:
+  const normalized = parsed.ingredient.toLowerCase().trim();
+  // "all-purpose flour"
+  3. Check cache first:
+  SELECT category, aisle FROM ingredient_categories
+  WHERE ingredient = 'all-purpose flour';
+  4. If not in cache, call Spoonacular:
+  async function categorizeIngredient(ingredientName) {
+    // Check cache
+    const cached = await db.query(
+      'SELECT category, aisle FROM ingredient_categories WHERE ingredient = $1',
+      [ingredientName]
+    );
+
+    if (cached.rows.length > 0) {
+      return cached.rows[0];
+    }
+
+    // Call Spoonacular
+    try {
+      const searchResp = await axios.get(
+        'https://api.spoonacular.com/food/ingredients/search',
+        {
+          params: {
+            query: ingredientName,
+            apiKey: process.env.SPOONACULAR_API_KEY,
+            number: 1
+          }
+        }
+      );
+
+      if (searchResp.data.results.length === 0) {
+        // Fallback if not found
+        return { category: 'Other', aisle: null };
+      }
+
+      const ingredientId = searchResp.data.results[0].id;
+
+      // Get detailed info
+      const infoResp = await axios.get(
+        `https://api.spoonacular.com/food/ingredients/${ingredientId}/information`,
+        {
+          params: { apiKey: process.env.SPOONACULAR_API_KEY }
+        }
+      );
+
+      const category = infoResp.data.categoryPath
+        ? infoResp.data.categoryPath[0]
+        : infoResp.data.aisle || 'Other';
+      const aisle = infoResp.data.aisle;
+
+      // Cache the result
+      await db.query(
+        `INSERT INTO ingredient_categories
+         (ingredient, category, aisle, spoonacular_id, image_url, source)
+         VALUES ($1, $2, $3, $4, $5, 'spoonacular')
+         ON CONFLICT (ingredient) DO UPDATE
+         SET category = $2, aisle = $3, spoonacular_id = $4, image_url = $5`,
+        [
+          ingredientName,
+          category,
+          aisle,
+          ingredientId,
+          infoResp.data.image
+        ]
+      );
+
+      return { category, aisle };
+
+    } catch (error) {
+      console.error('Spoonacular API error:', error);
+
+      // Fallback to basic categorization
+      const fallback = getFallbackCategory(ingredientName);
+
+      // Cache fallback to avoid repeated API failures
+      await db.query(
+        `INSERT INTO ingredient_categories
+         (ingredient, category, aisle, source)
+         VALUES ($1, $2, NULL, 'fallback')
+         ON CONFLICT (ingredient) DO NOTHING`,
+        [ingredientName, fallback]
+      );
+
+      return { category: fallback, aisle: null };
+    }
+  }
+  5. Build ParsedIngredient object:
+  const parsedIngredient = {
+    amount: parsed.quantity?.toString() || null,
+    unit: parsed.unit || null,
+    ingredient: normalized,
+    originalText: originalString,
+    notes: parsed.preparation || null,
+    category: categoryInfo.category,
+    aisle: categoryInfo.aisle
+  };
+
+  ---
+  6. Fallback Categorization
+
+  Basic mapping when Spoonacular fails or quota exceeded:
+
+  function getFallbackCategory(ingredient) {
+    const categoryMap = {
+      // Produce
+      'tomato': 'Produce', 'onion': 'Produce', 'garlic': 'Produce',
+      'lettuce': 'Produce', 'carrot': 'Produce', 'potato': 'Produce',
+      'apple': 'Produce', 'banana': 'Produce', 'lemon': 'Produce',
+
+      // Meat & Seafood
+      'chicken': 'Meat', 'beef': 'Meat', 'pork': 'Meat',
+      'salmon': 'Seafood', 'shrimp': 'Seafood', 'fish': 'Seafood',
+
+      // Dairy
+      'milk': 'Dairy', 'butter': 'Dairy', 'cheese': 'Dairy',
+      'yogurt': 'Dairy', 'cream': 'Dairy', 'egg': 'Dairy',
+
+      // Baking
+      'flour': 'Baking', 'sugar': 'Baking', 'baking powder': 'Baking',
+      'baking soda': 'Baking', 'yeast': 'Baking', 'vanilla': 'Baking',
+
+      // Pantry
+      'rice': 'Pantry', 'pasta': 'Pantry', 'oil': 'Pantry',
+      'salt': 'Pantry', 'pepper': 'Pantry', 'sauce': 'Pantry',
+
+      // Spices
+      'cinnamon': 'Spices', 'cumin': 'Spices', 'paprika': 'Spices',
+      'oregano': 'Spices', 'basil': 'Spices', 'thyme': 'Spices',
+    };
+
+    const lowerIngredient = ingredient.toLowerCase();
+
+    // Check for matches
+    for (const [key, category] of Object.entries(categoryMap)) {
+      if (lowerIngredient.includes(key)) {
+        return category;
+      }
+    }
+
+    return 'Other';
+  }
+
+  ---
+  7. Updated API Endpoints
+
+  POST /api/recipes/from-url
+
+  Request:
+  {
+    "url": "https://example.com/recipe/..."
+  }
+
+  Response: (201 Created)
+  {
+    "id": "uuid",
+    "url": "...",
+    "title": "Chocolate Chip Cookies",
+    "ingredients": [
+      "2 cups all-purpose flour",
+      "1 tsp baking soda",
+      "1/2 cup butter, softened",
+      "2 large eggs"
+    ],
+    "parsedIngredients": [
+      {
+        "amount": "2",
+        "unit": "cups",
+        "ingredient": "all-purpose flour",
+        "originalText": "2 cups all-purpose flour",
+        "notes": null,
+        "category": "Baking",
+        "aisle": "Baking"
+      },
+      {
+        "amount": "1",
+        "unit": "tsp",
+        "ingredient": "baking soda",
+        "originalText": "1 tsp baking soda",
+        "notes": null,
+        "category": "Baking",
+        "aisle": "Baking"
+      },
+      {
+        "amount": "1/2",
+        "unit": "cup",
+        "ingredient": "butter",
+        "originalText": "1/2 cup butter, softened",
+        "notes": "softened",
+        "category": "Dairy",
+        "aisle": "Dairy"
+      },
+      {
+        "amount": "2",
+        "unit": null,
+        "ingredient": "eggs",
+        "originalText": "2 large eggs",
+        "notes": "large",
+        "category": "Dairy",
+        "aisle": "Dairy"
+      }
+    ]
+  }
+
+  GET /api/recipes (unchanged)
+
+  Returns all recipes with parsedIngredients included.
+
+  GET /api/recipes/:id (unchanged)
+
+  Returns single recipe with parsedIngredients.
+
+  ---
+  8. Shopping List Endpoints (NEW)
+
+  POST /api/shopping-lists
+
+  Request:
+  {
+    "name": "Weekend Meal Prep",
+    "recipeIds": ["uuid1", "uuid2", "uuid3"]
+  }
+
+  Response: (201 Created)
+  {
+    "id": "uuid",
+    "name": "Weekend Meal Prep",
+    "userId": "uuid",
+    "items": [
+      {
+        "ingredient": "all-purpose flour",
+        "totalAmount": "3.5",
+        "unit": "cups",
+        "category": "Baking",
+        "aisle": "Baking",
+        "checked": false,
+        "recipes": ["Cookies", "Pizza Dough"]
+      },
+      {
+        "ingredient": "chicken breast",
+        "totalAmount": "2",
+        "unit": "lbs",
+        "category": "Meat",
+        "aisle": "Meat",
+        "checked": false,
+        "recipes": ["Chicken Stir Fry"]
+      }
+    ],
+    "createdAt": "2026-01-23T..."
+  }
+
+  Logic:
+  1. Fetch all recipes by IDs
+  2. Combine parsedIngredients from all recipes
+  3. Group by ingredient (normalized name)
+  4. Sum amounts if same unit
+  5. Group by category for display
+
+  GET /api/shopping-lists
+
+  Get user's shopping lists.
+
+  PATCH /api/shopping-lists/:id/items/:ingredient
+
+  Check/uncheck an item.
+
+  Request:
+  {
+    "checked": true
+  }
+
+  DELETE /api/shopping-lists/:id
+
+  Delete shopping list.
+
+  ---
+  9. Error Handling
+
+  Spoonacular API Errors
+
+  Rate Limit Exceeded (429):
+  if (error.response?.status === 429) {
+    console.warn('Spoonacular quota exceeded, using fallback');
+    return getFallbackCategory(ingredient);
+  }
+
+  Invalid API Key (401/403):
+  if (error.response?.status === 401 || error.response?.status === 403) {
+    console.error('Invalid Spoonacular API key');
+    return getFallbackCategory(ingredient);
+  }
+
+  Network Error:
+  try {
+    // Spoonacular call
+  } catch (error) {
+    console.error('Spoonacular API unavailable:', error.message);
+    return getFallbackCategory(ingredient);
+  }
+
+  ---
+  10. Performance & Caching Strategy
+
+  Cache Hit Rate Goals
+
+  - Week 1: ~20% (most ingredients are new)
+  - Month 1: ~60% (common ingredients cached)
+  - Month 3: ~85% (vast majority cached)
+  - Month 6+: ~95% (API calls rare)
+
+  Monitoring
+
+  Track in application logs:
+  console.log('Ingredient categorization:', {
+    ingredient: name,
+    source: 'cache' | 'spoonacular' | 'fallback',
+    apiCallsToday: count
+  });
+
+  Quota Management
+
+  - Free tier: 150 calls/day
+  - Cache lookups: unlimited (database)
+  - Expected: 10-30 API calls/day after first month
+
+  ---
+  11. Testing
+
+  Test Data
+
+  const testIngredients = [
+    "2 cups all-purpose flour",
+    "1 lb chicken breast",
+    "3 large eggs",
+    "1/2 cup olive oil",
+    "Salt to taste",
+    "2 cloves garlic, minced"
+  ];
+
+  Expected Results
+
+  All should return valid categories from Spoonacular or fallback.
+
+  Cache Test
+
+  1. Parse same ingredient twice
+  2. First call: Spoonacular API
+  3. Second call: Database cache (faster, no API call)
+
+  ---
+  12. Migration Plan
+
+  Existing Recipes
+
+  Option A: Re-parse on demand
+  - When recipe is viewed, check if parsedIngredients exists
+  - If not, parse and save
+
+  Option B: Background job
+  - Queue all existing recipes
+  - Parse 10-20 per minute to avoid quota issues
+  - Complete migration over days/weeks
+
+  ---
+  NPM Packages Needed
+
+  {
+    "dependencies": {
+      "axios": "^1.6.0",
+      "ingredient-parser-nlp": "^2.0.0"
+    }
+  }
+
+  ---
+  Summary Checklist
+
+  - Sign up for Spoonacular API (free tier)
+  - Add SPOONACULAR_API_KEY to environment
+  - Install ingredient-parser-nlp and axios
+  - Create ingredient_categories table
+  - Add parsed_ingredients column to recipes table
+  - Implement ingredient parsing logic
+  - Implement Spoonacular API integration with caching
+  - Implement fallback categorization
+  - Update /api/recipes/from-url to parse & categorize
+  - Create shopping list endpoints
+  - Test with sample recipes
+  - Monitor API quota usage

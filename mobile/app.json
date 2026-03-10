@@ -1,0 +1,102 @@
+{
+  "expo": {
+    "icon": "./assets/icon.png",
+    "name": "Streudel",
+    "slug": "streudel-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "streudel",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.streudel.mobile",
+      "appleTeamId": "8RTY9N79XR",
+      "associatedDomains": ["applinks:streudel.app"],
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": [
+          "bear",
+          "obsidian",
+          "notion",
+          "things",
+          "drafts",
+          "craftdocs",
+          "mobilenotes",
+          "x-apple-reminderkit",
+          "calshow",
+          "omnifocus",
+          "todoist",
+          "googledrive",
+          "googledocs",
+          "googlesheets",
+          "googleslides",
+          "googlechrome",
+          "firefox",
+          "brave",
+          "mailto",
+          "tel",
+          "sms",
+          "facetime",
+          "slack",
+          "telegram",
+          "whatsapp",
+          "discord",
+          "spotify",
+          "youtube",
+          "twitter",
+          "x-twitter",
+          "instagram",
+          "facebook",
+          "messenger"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.streudel.mobile",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": {
+            "scheme": "streudel"
+          },
+          "category": ["BROWSABLE", "DEFAULT"]
+        },
+        {
+          "action": "SEND",
+          "data": {
+            "mimeType": "text/plain"
+          },
+          "category": ["DEFAULT"]
+        }
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-asset",
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "a4aeb1ce-4839-4a31-9b65-4c72b6379747"
+      }
+    }
+  }
+}

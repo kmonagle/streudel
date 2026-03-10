@@ -1,0 +1,14 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+
+# Mobile (Expo/React Native)
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision

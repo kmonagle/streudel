@@ -1,0 +1,15 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "watchPatterns": [
+      "client/**",
+      "server/**",
+      "shared/**",
+      "package.json",
+      "package-lock.json",
+      "tsconfig.json",
+      "vite.config.ts",
+      "tailwind.config.ts"
+    ]
+  }
+}
