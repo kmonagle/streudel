@@ -261,7 +261,7 @@ export async function parseRecipeFromUrl(url: string): Promise<ParsedRecipe> {
       signal: AbortSignal.timeout(15000),
     });
 
-    if (response.status === 403 || response.status === 401) {
+    if (!response.ok) {
       // Site is blocking direct fetch — try via Jina Reader proxy
       console.log(`Direct fetch blocked (${response.status}), retrying via Jina Reader: ${url}`);
       const jinaUrl = `https://r.jina.ai/${url}`;
@@ -283,8 +283,6 @@ export async function parseRecipeFromUrl(url: string): Promise<ParsedRecipe> {
         throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
       }
       html = await jinaResponse.text();
-    } else if (!response.ok) {
-      throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
     } else {
       html = await response.text();
     }
