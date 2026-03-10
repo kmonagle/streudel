@@ -269,6 +269,8 @@ export async function parseRecipeFromUrl(url: string): Promise<ParsedRecipe> {
         ...browserHeaders,
         'X-Return-Format': 'html',
       };
+      const hasJinaKey = !!process.env.JINA_API_KEY;
+      console.log(`Jina: hasApiKey=${hasJinaKey}, keyLength=${process.env.JINA_API_KEY?.length ?? 0}`);
       if (process.env.JINA_API_KEY) {
         jinaHeaders['Authorization'] = `Bearer ${process.env.JINA_API_KEY}`;
       }
@@ -276,6 +278,7 @@ export async function parseRecipeFromUrl(url: string): Promise<ParsedRecipe> {
         headers: jinaHeaders,
         signal: AbortSignal.timeout(20000),
       });
+      console.log(`Jina response status: ${jinaResponse.status}`);
       if (!jinaResponse.ok) {
         throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
       }
