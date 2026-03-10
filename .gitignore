@@ -11,4 +11,4 @@ vite.config.ts.*
 *.p8
 *.p12
 *.key
-*.mobileprovision
+*.mobileprovisionpackage-lock.json
