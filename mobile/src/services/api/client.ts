@@ -127,29 +127,19 @@ class ApiClient {
         console.log('📤 API Request:', config.method?.toUpperCase(), config.url);
         // console.log('🔓 Using dev bypass header');
 
-        // Use cookie for authentication
+        // Use Authorization: Bearer for auth — React Native's native HTTP layer
+        // strips Cookie headers silently. The server converts Bearer tokens to
+        // connect.sid cookies in its Authorization middleware.
         if (cookieValue && config.headers) {
-          let formattedCookie: string;
+          // Extract the session value (strip "connect.sid=" prefix if present)
+          const sessionValue = cookieValue.startsWith('connect.sid=')
+            ? cookieValue.slice('connect.sid='.length)
+            : cookieValue;
 
-          console.log('🍪 Raw cookie value:', {
-            length: cookieValue.length,
-            hasEquals: cookieValue.includes('='),
-            hasConnectSid: cookieValue.includes('connect.sid'),
-            preview: cookieValue.substring(0, 30) + '...'
-          });
-
-          if (cookieValue.includes('=')) {
-            formattedCookie = cookieValue;
-          } else {
-            formattedCookie = `connect.sid=${cookieValue}`;
-          }
-
-          config.headers.Cookie = formattedCookie;
-          // Log first 50 chars of cookie to avoid logging full session
-          const cookiePreview = formattedCookie.substring(0, 50) + (formattedCookie.length > 50 ? '...' : '');
-          console.log('🍪 Sending cookie:', cookiePreview);
+          config.headers['Authorization'] = `Bearer ${sessionValue}`;
+          console.log('🔑 Sending Authorization header, session preview:', sessionValue.substring(0, 30) + '...');
         } else {
-          console.log('⚠️ No cookie available for request');
+          console.log('⚠️ No session available for request');
         }
         return config;
       },

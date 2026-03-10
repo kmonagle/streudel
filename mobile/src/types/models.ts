@@ -197,6 +197,51 @@ export interface AddRecipeToShoppingListDto {
   servingMultiplier?: number;
 }
 
+// Goals (used as shopping list categories)
+export interface Goal {
+  id: string;
+  name: string;
+  title: string;
+  type: string | null;
+  color: string | null;
+  userId: string;
+  sortOrder: number;
+}
+
+// Tasks (shopping list items)
+export interface Task {
+  id: string;
+  name: string;
+  title: string;
+  notes: string | null;
+  completed: boolean;
+  completedToday: boolean;
+  completionCount: number;
+  goalId: string | null;
+  isOnToday: boolean;
+  isToday: boolean;
+  sortOrder: number;
+  todaySortOrder: number | null;
+  userId: string;
+}
+
+export interface CreateTaskDto {
+  title: string;
+  notes?: string;
+  goalId?: string;
+  isToday?: boolean;
+  completed?: boolean;
+}
+
+export interface UpdateTaskDto {
+  title?: string;
+  notes?: string;
+  completed?: boolean;
+  isToday?: boolean;
+  goalId?: string;
+  sortOrder?: number;
+}
+
 // User Settings
 export type ThemeSetting = 'light' | 'dark' | 'auto';
 export type StartScreenSetting = 'today' | 'mystuff';

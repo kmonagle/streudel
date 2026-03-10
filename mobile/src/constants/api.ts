@@ -1,8 +1,6 @@
 // API configuration constants
 
-// TODO: Update this to your Railway URL after first deployment
-// e.g. 'https://streudel-server-production.up.railway.app'
-export const API_BASE_URL = 'https://streudel-server-production.up.railway.app';
+export const API_BASE_URL = 'https://streudel-production.up.railway.app';
 
 // API Endpoints
 export const API_ENDPOINTS = {
@@ -34,6 +32,16 @@ export const API_ENDPOINTS = {
   SHOPPING_LIST_ADD_RECIPE: (listId: string) => `/api/shopping-lists/${listId}/add-recipe`,
   SHOPPING_LIST_CLEAR_CHECKED: (listId: string) => `/api/shopping-lists/${listId}/clear-checked`,
 
+  // Goals (used as shopping list categories)
+  GOALS: '/api/goals',
+  GOAL_BY_ID: (id: string) => `/api/goals/${id}`,
+  GOAL_TASKS: (goalId: string) => `/api/goals/${goalId}/tasks`,
+  GOAL_DELETE_COMPLETED_TASKS: (goalId: string) => `/api/goals/${goalId}/tasks/completed`,
+
+  // Tasks (shopping list items)
+  TASKS: '/api/tasks',
+  TASK_BY_ID: (id: string) => `/api/tasks/${id}`,
+
   // Settings
   SETTINGS: '/api/settings',
 
@@ -46,6 +54,6 @@ export const API_ENDPOINTS = {
 
 // OAuth configuration
 export const OAUTH_CONFIG = {
-  redirectScheme: 'foodordered',
+  redirectScheme: 'streudel',
   redirectPath: 'oauth-callback',
 };
