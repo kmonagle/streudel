@@ -265,11 +265,15 @@ export async function parseRecipeFromUrl(url: string): Promise<ParsedRecipe> {
       // Site is blocking direct fetch — try via Jina Reader proxy
       console.log(`Direct fetch blocked (${response.status}), retrying via Jina Reader: ${url}`);
       const jinaUrl = `https://r.jina.ai/${url}`;
+      const jinaHeaders: Record<string, string> = {
+        ...browserHeaders,
+        'X-Return-Format': 'html',
+      };
+      if (process.env.JINA_API_KEY) {
+        jinaHeaders['Authorization'] = `Bearer ${process.env.JINA_API_KEY}`;
+      }
       const jinaResponse = await fetch(jinaUrl, {
-        headers: {
-          ...browserHeaders,
-          'X-Return-Format': 'html',
-        },
+        headers: jinaHeaders,
         signal: AbortSignal.timeout(20000),
       });
       if (!jinaResponse.ok) {
