@@ -262,27 +262,24 @@ export async function parseRecipeFromUrl(url: string): Promise<ParsedRecipe> {
     });
 
     if (!response.ok) {
-      // Site is blocking direct fetch — try via Jina Reader proxy
-      console.log(`Direct fetch blocked (${response.status}), retrying via Jina Reader: ${url}`);
-      const jinaUrl = `https://r.jina.ai/${url}`;
-      const jinaHeaders: Record<string, string> = {
-        ...browserHeaders,
-        'X-Return-Format': 'html',
-      };
-      const hasJinaKey = !!process.env.JINA_API_KEY;
-      console.log(`Jina: hasApiKey=${hasJinaKey}, keyLength=${process.env.JINA_API_KEY?.length ?? 0}`);
-      if (process.env.JINA_API_KEY) {
-        jinaHeaders['Authorization'] = `Bearer ${process.env.JINA_API_KEY}`;
-      }
-      const jinaResponse = await fetch(jinaUrl, {
-        headers: jinaHeaders,
-        signal: AbortSignal.timeout(20000),
-      });
-      console.log(`Jina response status: ${jinaResponse.status}`);
-      if (!jinaResponse.ok) {
+      // Site is blocking direct fetch — try via ScrapingBee proxy
+      console.log(`Direct fetch blocked (${response.status}), retrying via ScrapingBee: ${url}`);
+      const scrapingBeeKey = process.env.SCRAPINGBEE_API_KEY;
+      if (!scrapingBeeKey) {
         throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
       }
-      html = await jinaResponse.text();
+      const scrapingBeeUrl = new URL('https://app.scrapingbee.com/api/v1/');
+      scrapingBeeUrl.searchParams.set('api_key', scrapingBeeKey);
+      scrapingBeeUrl.searchParams.set('url', url);
+      scrapingBeeUrl.searchParams.set('render_js', 'false');
+      const sbResponse = await fetch(scrapingBeeUrl.toString(), {
+        signal: AbortSignal.timeout(20000),
+      });
+      console.log(`ScrapingBee response status: ${sbResponse.status}`);
+      if (!sbResponse.ok) {
+        throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
+      }
+      html = await sbResponse.text();
     } else {
       html = await response.text();
     }
