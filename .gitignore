@@ -11,4 +11,12 @@ vite.config.ts.*
 *.p8
 *.p12
 *.key
-*.mobileprovisionpackage-lock.json
+*.mobileprovision
+mobile/.expo/
+mobile/expo-env.d.ts
+mobile/*.tsbuildinfo
+mobile/.metro-health-check*
+mobile/web-build/
+mobile/android/
+mobile/ios/
+mobile/src/constants/devConfig.ts
