@@ -19,7 +19,8 @@ export default function Index() {
   // Redirect based on authentication status
   if (isAuthenticated) {
     // Go directly to start screen
-    const startScreen = settings?.startScreen || 'today';
+    const validTabs = ['recipes', 'settings'];
+    const startScreen = validTabs.includes(settings?.startScreen ?? '') ? settings!.startScreen : 'recipes';
     return <Redirect href={`/(tabs)/${startScreen}`} />;
   } else {
     return <Redirect href="/login" />;

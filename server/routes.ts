@@ -1445,6 +1445,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (error.message.includes('Invalid URL')) {
         return res.status(400).json({ error: "Invalid URL", details: error.message });
       }
+      if (error.message.includes('403')) {
+        return res.status(422).json({ error: "This site blocks recipe imports", details: "The website is blocking automated access. Try a different recipe site." });
+      }
       if (error.message.includes('timed out') || error.message.includes('Failed to fetch')) {
         return res.status(500).json({ error: "Failed to fetch recipe", details: error.message });
       }
